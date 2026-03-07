@@ -1,0 +1,481 @@
+export interface Restaurant {
+  id: string;
+  name: string;
+  neighborhood: string;
+  borough: string;
+  cuisine: string;
+  ambiance: string;
+  mustOrder: string;
+  reservationMethod: "resy" | "email" | "both";
+  reservationEmail: string | null;
+  contactEmail: string | null; // general contact (may differ from reservations)
+  resyUrl: string | null;
+  website: string | null;
+  advanceDays: number; // days in advance reservations open
+  bookingTime: string | null; // "9:00 AM ET" — null if rolling/no fixed time
+  bookingTip: string;
+  walkInOption: string | null;
+  phone: string | null;
+  michelinStar: boolean;
+  bibGourmand: boolean;
+  priceRange: "$$" | "$$$" | "$$$$";
+  imageUrl: string;
+  imageCredit: string;
+  tags: string[];
+}
+
+export const restaurants: Restaurant[] = [
+  {
+    id: "don-angie",
+    name: "Don Angie",
+    neighborhood: "West Village",
+    borough: "Manhattan",
+    cuisine: "Italian-American",
+    ambiance:
+      "Cozy, warmly lit Italian-American gem with a retro supper-club feel. Expect pinwheel lasagna, wood-paneled walls, and a room full of people who planned three weeks ahead.",
+    mustOrder: "Pinwheel Lasagna, Honey Walnut Shrimp, Tie-Dye Cheesecake",
+    reservationMethod: "resy",
+    reservationEmail: null,
+    contactEmail: null,
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/don-angie",
+    website: "https://www.donangie.com",
+    advanceDays: 7,
+    bookingTime: "9:00 AM ET",
+    bookingTip:
+      "Reservations vanish in under 15 seconds on Resy. Log in 2 minutes early. 10 bar seats are walk-in only — arrive before 6 PM on a weekday.",
+    walkInOption: "10 bar seats available nightly — no wait list",
+    phone: null,
+    michelinStar: false,
+    bibGourmand: false,
+    priceRange: "$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Italian", "Date Night", "West Village", "Pasta"],
+  },
+  {
+    id: "lartusi",
+    name: "L'Artusi",
+    neighborhood: "West Village",
+    borough: "Manhattan",
+    cuisine: "Italian",
+    ambiance:
+      "Refined but relaxed Italian on a beautiful West Village block. The long marble bar and open kitchen make it equally good for a solo dinner or a group celebration.",
+    mustOrder: "Burrata, Agnolotti, Tagliata di Manzo",
+    reservationMethod: "both",
+    reservationEmail: "info@lartusi.com",
+    contactEmail: "info@lartusi.com",
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/lartusi-ny",
+    website: "https://www.lartusi.com",
+    advanceDays: 14,
+    bookingTime: "9:00 AM ET",
+    bookingTip:
+      "Opens exactly 14 days in advance at 9 AM. ~24 counter seats are walk-in only. Avoid Thu–Sat 7–10 PM — the hardest window to book.",
+    walkInOption: "~24 counter bar seats available nightly",
+    phone: null,
+    michelinStar: false,
+    bibGourmand: false,
+    priceRange: "$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1414235077428-338989a2e8c0?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Italian", "West Village", "Bar Seating", "Romantic"],
+  },
+  {
+    id: "via-carota",
+    name: "Via Carota",
+    neighborhood: "West Village",
+    borough: "Manhattan",
+    cuisine: "Italian",
+    ambiance:
+      "Perhaps the most beloved Italian restaurant in NYC — a rustic, candlelit room that feels effortlessly Venetian. The daily-changing menu follows the seasons; everything is impeccable.",
+    mustOrder:
+      "Insalata Verde, Cacio e Pepe, Fritto Misto, Whole Branzino",
+    reservationMethod: "both",
+    reservationEmail: "ciao@viacarota.com",
+    contactEmail: "ciao@viacarota.com",
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/via-carota",
+    website: "https://www.viacarota.com",
+    advanceDays: 30,
+    bookingTime: "10:00 AM ET",
+    bookingTip:
+      "Opens 30 days in advance at 10 AM — slots are gone within seconds. Walk-ins are actually your best bet: ~60% of tables held nightly. Arrive right at 5 PM opening and put your name on the list.",
+    walkInOption:
+      "~60% of tables walk-in. Arrive by 5 PM for best chance.",
+    phone: "(212) 255-1962",
+    michelinStar: false,
+    bibGourmand: false,
+    priceRange: "$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1466978913421-dad2ebd01d17?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Italian", "West Village", "Walk-In Friendly", "Seasonal"],
+  },
+  {
+    id: "ambassadors-clubhouse",
+    name: "Ambassadors Clubhouse",
+    neighborhood: "NoMad",
+    borough: "Manhattan",
+    cuisine: "Punjabi / Modern Indian",
+    ambiance:
+      "From the team behind Michelin-starred Gymkhana London, this is the most exciting Indian restaurant to open in NYC in years. Elevated Punjabi cooking in a dramatic, jewel-toned dining room.",
+    mustOrder: "Murgh Malai, Dal Makhani, Lamb Chops",
+    reservationMethod: "resy",
+    reservationEmail: null,
+    contactEmail: "nyc@ambassadorsclubhouse.com",
+    resyUrl:
+      "https://resy.com/cities/new-york-ny/venues/ambassadors-clubhouse",
+    website: "https://ambassadorsclubhouse.com/newyork/",
+    advanceDays: 14,
+    bookingTime: null,
+    bookingTip:
+      "Demand is extremely high. Sign up for priority access on their website. $35/guest cancellation fee within 24 hours.",
+    walkInOption: null,
+    phone: null,
+    michelinStar: false,
+    bibGourmand: false,
+    priceRange: "$$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1585937421612-70a008356fbe?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Indian", "NoMad", "Upscale", "New Opening"],
+  },
+  {
+    id: "potluck-club",
+    name: "Potluck Club",
+    neighborhood: "Chinatown",
+    borough: "Manhattan",
+    cuisine: "Cantonese-American",
+    ambiance:
+      "A love letter to Hong Kong dinner culture — communal Cantonese cooking in a lively, unpretentious Chinatown room. Bib Gourmand recognized and perpetually packed.",
+    mustOrder: "Steamed Fish, Char Siu, Egg Tarts",
+    reservationMethod: "both",
+    reservationEmail: "events@potluckclubny.com",
+    contactEmail: "events@potluckclubny.com",
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/potluck-club",
+    website: "https://thepotluckclubny.com",
+    advanceDays: 14,
+    bookingTime: null,
+    bookingTip:
+      "Email events@potluckclubny.com for parties of 8+. $10/guest cancellation fee within 24 hours. Wed–Sun only, 5:30–9 PM.",
+    walkInOption: "Limited — call ahead",
+    phone: null,
+    michelinStar: false,
+    bibGourmand: true,
+    priceRange: "$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1563245372-f21724e3856d?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Chinese", "Cantonese", "Chinatown", "Bib Gourmand", "Group Friendly"],
+  },
+  {
+    id: "cervos",
+    name: "Cervo's",
+    neighborhood: "Lower East Side",
+    borough: "Manhattan",
+    cuisine: "Portuguese Seafood",
+    ambiance:
+      "A narrow, convivial wine bar-meets-restaurant built around Iberian seafood. Tinned fish, natural wine, and salt-kissed petiscos in a space that somehow feels like Lisbon.",
+    mustOrder: "Clams, Grilled Fish, Bacalhau Fritters, Tinned Anchovies",
+    reservationMethod: "both",
+    reservationEmail: "hello@cervosnyc.com",
+    contactEmail: "hello@cervosnyc.com",
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/cervos",
+    website: "https://www.cervosnyc.com",
+    advanceDays: 7,
+    bookingTime: null,
+    bookingTip:
+      "Reservations are not brutally competitive here — Resy or email both work. Open nightly 5:30–11 PM.",
+    walkInOption: "Bar seats available nightly",
+    phone: "(212) 226-2545",
+    michelinStar: false,
+    bibGourmand: false,
+    priceRange: "$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1559339352-11d035aa65de?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Seafood", "Portuguese", "Wine Bar", "Lower East Side"],
+  },
+  {
+    id: "misi",
+    name: "Misi",
+    neighborhood: "Williamsburg",
+    borough: "Brooklyn",
+    cuisine: "Italian (Pasta & Vegetables)",
+    ambiance:
+      "Missy Robbins's pasta-focused counterpart to Lilia — austere, modern, and disciplined. The vegetable antipasti and handmade pasta are among the finest in the city.",
+    mustOrder: "Cavatelli, Mafaldine, Seasonal Vegetable Antipasti",
+    reservationMethod: "both",
+    reservationEmail: "info@misinewyork.com",
+    contactEmail: "info@misinewyork.com",
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/misi",
+    website: "https://www.misinewyork.com",
+    advanceDays: 21,
+    bookingTime: null,
+    bookingTip:
+      "Less frantic than Lilia but still books fast. Email or Resy both work. Brooklyn location means slightly easier booking than comparable Manhattan spots.",
+    walkInOption: "Bar seating available",
+    phone: "347-566-3262",
+    michelinStar: false,
+    bibGourmand: false,
+    priceRange: "$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1473093226795-af9932fe5856?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Italian", "Pasta", "Brooklyn", "Williamsburg", "Vegetables"],
+  },
+  {
+    id: "bungalow",
+    name: "Bungalow",
+    neighborhood: "East Village",
+    borough: "Manhattan",
+    cuisine: "Modern Indian",
+    ambiance:
+      "Inventive Indian-inspired cocktails and food in a lush, garden-like East Village space. Feels like a tropical escape — think rattan, greenery, and extremely good drinks.",
+    mustOrder: "Lamb Keema Sliders, Butter Chicken Wings, Masala Gin & Tonic",
+    reservationMethod: "both",
+    reservationEmail: "info@bungalowny.com",
+    contactEmail: "info@bungalowny.com",
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/bungalow",
+    website: "https://www.bungalowny.com",
+    advanceDays: 20,
+    bookingTime: "11:00 AM ET",
+    bookingTip:
+      "Opens 20 days in advance at 11 AM (except Tuesdays). Books in 2–3 minutes. Log in by 10:58 AM. Max party of 14.",
+    walkInOption: "Limited availability",
+    phone: null,
+    michelinStar: false,
+    bibGourmand: false,
+    priceRange: "$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1571115764595-644a1f56a55c?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Indian", "Cocktails", "East Village", "Tropical"],
+  },
+  {
+    id: "4-charles",
+    name: "4 Charles Prime Rib",
+    neighborhood: "Greenwich Village",
+    borough: "Manhattan",
+    cuisine: "American Steakhouse",
+    ambiance:
+      "Intimate, dimly lit, and unapologetically old-school — a 40-seat hideaway that feels like dining in someone's very elegant apartment. The prime rib is legendary.",
+    mustOrder: "Prime Rib (obviously), Creamed Spinach, Shrimp Cocktail",
+    reservationMethod: "resy",
+    reservationEmail: null,
+    contactEmail: null,
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/4-charles-prime-rib",
+    website: "https://www.nycprimerib.com",
+    advanceDays: 21,
+    bookingTime: "9:00 AM ET",
+    bookingTip:
+      "Opens 21 days in advance at 9 AM EST. $5 per person reservation fee (non-refundable). Max 6 guests. Book via nycprimerib.com/res.",
+    walkInOption: null,
+    phone: "(212) 561-5992",
+    michelinStar: false,
+    bibGourmand: false,
+    priceRange: "$$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1544025162-d76694265947?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Steakhouse", "Prime Rib", "Greenwich Village", "Old School", "Intimate"],
+  },
+  {
+    id: "raouls",
+    name: "Raoul's",
+    neighborhood: "SoHo",
+    borough: "Manhattan",
+    cuisine: "French Bistro",
+    ambiance:
+      "The original downtown institution since 1975. Raoul's is louche, romantic, and essential — red leather banquettes, Belle Époque mirrors, and a steak au poivre that has no equal.",
+    mustOrder: "Steak au Poivre, Moules, Côtes de Veau, Profiteroles",
+    reservationMethod: "both",
+    reservationEmail: "info@raouls.com",
+    contactEmail: "info@raouls.com",
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/raouls",
+    website: "https://www.raouls.com",
+    advanceDays: 30,
+    bookingTime: "8:00 AM ET",
+    bookingTip:
+      "Opens 30 days in advance at 8 AM — the earliest of any restaurant on this list. Max 5 guests. No phone reservations. Resale forbidden.",
+    walkInOption: null,
+    phone: "(212) 966-3518",
+    michelinStar: false,
+    bibGourmand: false,
+    priceRange: "$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1424847651672-bf20a4b0982b?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["French", "SoHo", "Classic", "Romantic", "Steak"],
+  },
+  {
+    id: "jeju-noodle-bar",
+    name: "Jeju Noodle Bar",
+    neighborhood: "West Village",
+    borough: "Manhattan",
+    cuisine: "Korean",
+    ambiance:
+      "One Michelin star, 40 seats, and a singular focus: the noodles of South Korea's Jeju Island. Spare, serene, and deeply satisfying. One of NYC's most underrated fine dining experiences.",
+    mustOrder: "Noodle Flight, Bossam, Kimchi Fried Rice",
+    reservationMethod: "both",
+    reservationEmail: "reservations@jejunoodlebar.com",
+    contactEmail: "reservations@jejunoodlebar.com",
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/jeju-noodle-bar",
+    website: "https://www.jejunoodlebar.com",
+    advanceDays: 14,
+    bookingTime: null,
+    bookingTip:
+      "Email for parties of 5+. Wed–Sun only. One Michelin Star. Extremely small space — book as soon as possible.",
+    walkInOption: "Cancellation walk-ins only",
+    phone: null,
+    michelinStar: true,
+    bibGourmand: false,
+    priceRange: "$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1569050467447-ce54b3bbc37d?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Korean", "Noodles", "Michelin Star", "West Village", "Intimate"],
+  },
+  {
+    id: "corner-store",
+    name: "The Corner Store",
+    neighborhood: "SoHo",
+    borough: "Manhattan",
+    cuisine: "New American Seafood",
+    ambiance:
+      "Major Food Group's ode to the American seafood house — lobster rolls, raw bar, and impeccable service in a stylish SoHo corner space. Feels glamorous and easy at once.",
+    mustOrder: "Lobster Roll, Oysters, Crab Cake, Key Lime Pie",
+    reservationMethod: "resy",
+    reservationEmail: null,
+    contactEmail: null,
+    resyUrl:
+      "https://resy.com/cities/new-york-ny/venues/the-corner-store-nyc",
+    website: "https://www.thecornerstoresoho.com",
+    advanceDays: 14,
+    bookingTime: null,
+    bookingTip:
+      "Resy only — no phone reservations. Max 4 guests per booking. 13-seat bar available for walk-ins. 2-hour time limit per table.",
+    walkInOption: "13-seat bar walk-in friendly",
+    phone: "(212) 271-9240",
+    michelinStar: false,
+    bibGourmand: false,
+    priceRange: "$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1510626176961-4b57d4fbad03?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Seafood", "American", "SoHo", "Raw Bar", "Lobster"],
+  },
+  {
+    id: "lilia",
+    name: "Lilia",
+    neighborhood: "Williamsburg",
+    borough: "Brooklyn",
+    cuisine: "Italian",
+    ambiance:
+      "The impossibly coveted Italian in Williamsburg — airy, light-filled, and joyful. Missy Robbins's pastas are transcendent. Worth every effort to get a table.",
+    mustOrder:
+      "Mafaldine with Pink Peppercorn and Trout Roe, Sheep's Milk Ravioli, Clams",
+    reservationMethod: "both",
+    reservationEmail: "reservations@lilianewyork.com",
+    contactEmail: "reservations@lilianewyork.com",
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/lilia",
+    website: "https://www.lilianewyork.com",
+    advanceDays: 28,
+    bookingTime: "10:00 AM ET",
+    bookingTip:
+      "Opens 28 days in advance at 10 AM ET. Same-day releases sometimes appear around 2 PM. Bar and patio walk-ins accepted at 4 PM — wait can be 30 min to 3 hours.",
+    walkInOption: "Bar/patio walk-ins at 4 PM opening",
+    phone: null,
+    michelinStar: false,
+    bibGourmand: true,
+    priceRange: "$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1498579150354-977475b7ea0b?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Italian", "Pasta", "Brooklyn", "Williamsburg", "Bib Gourmand"],
+  },
+  {
+    id: "claud",
+    name: "Claud",
+    neighborhood: "East Village",
+    borough: "Manhattan",
+    cuisine: "European Bistro",
+    ambiance:
+      "A One Michelin Star wine bar and bistro that somehow feels like your neighborhood spot. Exceptional natural wine list, impeccable European food, and a room full of people who know what they're doing.",
+    mustOrder: "Steak Tartare, Moules Frites, Floating Islands, Duck Confit",
+    reservationMethod: "resy",
+    reservationEmail: null,
+    contactEmail: null,
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/claud",
+    website: "https://www.claudnyc.com",
+    advanceDays: 14,
+    bookingTime: "9:00 AM ET",
+    bookingTip:
+      "Opens 14 days in advance at 9 AM. Mon–Sat only (closed Sundays). Max 6 guests via Resy. Bar is always a solid fallback.",
+    walkInOption: "Bar seating available",
+    phone: null,
+    michelinStar: true,
+    bibGourmand: false,
+    priceRange: "$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1550966871-3ed3cbe818b5?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["French", "Bistro", "Michelin Star", "East Village", "Wine Bar"],
+  },
+  {
+    id: "laser-wolf",
+    name: "Laser Wolf",
+    neighborhood: "Williamsburg",
+    borough: "Brooklyn",
+    cuisine: "Israeli (Shipudiya)",
+    ambiance:
+      "One Michelin Star rooftop restaurant at The Hoxton with panoramic Manhattan skyline views. Chef Michael Solomonov's NYC outpost — smoky skewers, hummus, salatim, and one of the best views in the city.",
+    mustOrder: "Lamb Skewers, Hummus, Salatim Spread, Whole Cauliflower",
+    reservationMethod: "both",
+    reservationEmail: "info@laserwolfbrooklyn.com",
+    contactEmail: "info@laserwolfbrooklyn.com",
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/laser-wolf",
+    website: "https://www.laserwolfbrooklyn.com",
+    advanceDays: 21,
+    bookingTime: "10:00 AM ET",
+    bookingTip:
+      "Opens 21 days in advance at 10 AM. The tasting menu format means there are no à la carte choices — just show up hungry. Rooftop may close in extreme weather.",
+    walkInOption: "Bar seating available weather permitting",
+    phone: null,
+    michelinStar: true,
+    bibGourmand: false,
+    priceRange: "$$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Israeli", "Rooftop", "Michelin Star", "Brooklyn", "Tasting Menu"],
+  },
+  {
+    id: "the-mulberry",
+    name: "The Mulberry",
+    neighborhood: "Nolita",
+    borough: "Manhattan",
+    cuisine: "Cocktail Bar / Caviar",
+    ambiance:
+      "A glamorous underground late-night destination in Nolita — velvet booths, candlelight, caviar service, and an expertly curated cocktail program. The city at its most seductive.",
+    mustOrder: "Caviar Service, Oysters, Signature Cocktails",
+    reservationMethod: "resy",
+    reservationEmail: null,
+    contactEmail: null,
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/the-mulberry",
+    website: "https://www.themulberrybar.com",
+    advanceDays: 7,
+    bookingTime: null,
+    bookingTip:
+      "More accessible than dining restaurants — Resy bookings available rolling. Closed Mondays. Thu–Sat until 3 AM. Perfect for after-dinner drinks or a late night.",
+    walkInOption: "Walk-ins welcome earlier in the evening",
+    phone: "(646) 627-7330",
+    michelinStar: false,
+    bibGourmand: false,
+    priceRange: "$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1572116469696-31de0f17cc34?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Cocktails", "Caviar", "Late Night", "Nolita", "Bar"],
+  },
+];
