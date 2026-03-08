@@ -79,7 +79,7 @@ export default function EmailModal({
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
         onClick={onClose}
       />
-      <div className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl overflow-hidden">
+      <div className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="bg-[#1C1C1C] px-6 py-4 flex items-center justify-between">
           <div>
@@ -101,7 +101,7 @@ export default function EmailModal({
         </div>
 
         {/* Email Fields */}
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 overflow-y-auto flex-1">
           <div>
             <label className="block text-xs font-semibold text-stone-400 uppercase tracking-widest mb-1">
               To
@@ -133,7 +133,7 @@ export default function EmailModal({
             <textarea
               value={body}
               onChange={(e) => setBody(e.target.value)}
-              rows={14}
+              rows={10}
               className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/50 resize-none font-mono leading-relaxed"
             />
           </div>
