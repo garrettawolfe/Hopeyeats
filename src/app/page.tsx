@@ -62,6 +62,9 @@ export default function Home() {
   const [, setTick] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Per-restaurant auto-book
+  const [autoBookIds, setAutoBookIds] = useState<Set<string>>(new Set());
+
   // Booking
   const [bookingInProgress, setBookingInProgress] = useState<string | null>(null);
   const [bookingLog, setBookingLog] = useState<BookingLog[]>([]);
@@ -166,18 +169,17 @@ export default function Home() {
       setAllSlots(nextSlots);
       setNewSlotIds(nextNewIds);
 
-      // Auto-book new slots if enabled
+      // Auto-book new slots for restaurants with per-restaurant auto-book ON
       if (
-        settings?.autoBookEnabled &&
         resyAuth?.authenticated &&
-        !result.isBaseline
+        !result.isBaseline &&
+        autoBookIds.size > 0
       ) {
         for (const diff of result.diffs) {
-          if (diff.newSlots.length > 0) {
-            // Book the first matching slot
+          if (diff.newSlots.length > 0 && autoBookIds.has(diff.restaurant.id)) {
+            // Book the first matching slot at this restaurant
             const slot = diff.newSlots[0];
             handleBook(slot);
-            break; // One booking at a time
           }
         }
       }
@@ -261,6 +263,25 @@ export default function Home() {
   // Toggle monitoring for a restaurant
   const toggleMonitor = (id: string) => {
     setMonitoredIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+        // Also disable auto-book when unmonitoring
+        setAutoBookIds((ab) => {
+          const nextAb = new Set(ab);
+          nextAb.delete(id);
+          return nextAb;
+        });
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  // Toggle auto-book for a specific restaurant
+  const toggleAutoBook = (id: string) => {
+    setAutoBookIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -416,6 +437,11 @@ export default function Home() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            {autoBookIds.size > 0 && (
+              <span className="text-xs text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+                Auto-book: {autoBookIds.size} restaurant{autoBookIds.size !== 1 ? "s" : ""}
+              </span>
+            )}
             <button
               onClick={() =>
                 setMonitoredIds(new Set(resyRestaurants.map((r) => r.id)))
@@ -425,7 +451,7 @@ export default function Home() {
               Monitor All
             </button>
             <button
-              onClick={() => setMonitoredIds(new Set())}
+              onClick={() => { setMonitoredIds(new Set()); setAutoBookIds(new Set()); }}
               className="text-xs text-stone-400 hover:text-stone-600 underline"
             >
               Clear
@@ -540,9 +566,10 @@ export default function Home() {
                   slots={allSlots.get(r.id) ?? []}
                   newSlotIds={newSlotIds}
                   isMonitored={monitoredIds.has(r.id)}
-                  autoBookEnabled={settings.autoBookEnabled}
+                  autoBookEnabled={autoBookIds.has(r.id)}
                   isAuthenticated={resyAuth?.authenticated ?? false}
                   onToggleMonitor={toggleMonitor}
+                  onToggleAutoBook={toggleAutoBook}
                   onBook={handleBook}
                   bookingInProgress={bookingInProgress}
                   lastChecked={diff?.checkedAt ?? null}

@@ -215,10 +215,123 @@ export async function bookReservation(
   }
 }
 
+// ─── Existing Reservations (Conflict Detection) ────────────────────────────
+
+export interface ExistingReservation {
+  reservationId: string;
+  venue: string;
+  venueId: number;
+  date: string; // YYYY-MM-DD
+  time: string; // HH:MM
+  partySize: number;
+}
+
+/** Cache of existing reservations, refreshed periodically. */
+let existingReservations: ExistingReservation[] = [];
+let lastReservationFetch = 0;
+const RESERVATION_CACHE_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Fetch the user's upcoming reservations from Resy.
+ */
+export async function fetchExistingReservations(
+  authToken: string,
+): Promise<ExistingReservation[]> {
+  // Use cache if fresh
+  if (Date.now() - lastReservationFetch < RESERVATION_CACHE_MS && existingReservations.length > 0) {
+    return existingReservations;
+  }
+
+  try {
+    const response = await fetch(`${RESY_API_BASE}/3/user/reservations`, {
+      method: "GET",
+      headers: {
+        Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
+        "X-Resy-Auth-Token": authToken,
+        "X-Resy-Universal-Auth": authToken,
+        Accept: "application/json",
+        Origin: "https://resy.com",
+        Referer: "https://resy.com/",
+      },
+    });
+
+    if (!response.ok) {
+      console.error(`[ResyBook] Failed to fetch reservations: ${response.status}`);
+      return existingReservations; // Return stale cache on error
+    }
+
+    const data = await response.json();
+    const reservations: ExistingReservation[] = [];
+
+    // Parse reservations from response (could be array or nested)
+    const items = Array.isArray(data) ? data : data.reservations ?? [];
+    for (const item of items) {
+      const dateTime = item.when ?? item.day ?? "";
+      const [datePart, timePart] = typeof dateTime === "string" && dateTime.includes(" ")
+        ? dateTime.split(" ")
+        : [item.day ?? dateTime, item.time_slot ?? ""];
+
+      reservations.push({
+        reservationId: String(item.reservation_id ?? item.resy_token ?? ""),
+        venue: item.venue?.name ?? "",
+        venueId: item.venue?.id?.resy ?? item.venue_id ?? 0,
+        date: datePart,
+        time: timePart ? timePart.substring(0, 5) : "",
+        partySize: item.num_seats ?? 2,
+      });
+    }
+
+    existingReservations = reservations;
+    lastReservationFetch = Date.now();
+    console.log(`[ResyBook] Fetched ${reservations.length} existing reservations`);
+    return reservations;
+  } catch (err) {
+    console.error("[ResyBook] Error fetching reservations:", err);
+    return existingReservations;
+  }
+}
+
+/**
+ * Check if a proposed booking conflicts with an existing reservation.
+ * A conflict is: same date AND overlapping time window (within 2 hours).
+ */
+export function hasTimeConflict(
+  existing: ExistingReservation[],
+  date: string,
+  time: string,
+): boolean {
+  if (!time) return false;
+
+  const [newH, newM] = time.split(":").map(Number);
+  const newMinutes = newH * 60 + newM;
+
+  for (const res of existing) {
+    if (res.date !== date) continue;
+    if (!res.time) continue;
+
+    const [exH, exM] = res.time.split(":").map(Number);
+    const exMinutes = exH * 60 + exM;
+
+    // Conflict if within 2 hours of each other
+    if (Math.abs(newMinutes - exMinutes) < 120) {
+      console.log(
+        `[ResyBook] Conflict: existing ${res.venue} at ${res.time} on ${res.date} vs proposed ${time} on ${date}`,
+      );
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function getExistingReservations(): ExistingReservation[] {
+  return existingReservations;
+}
+
 // ─── Full Auto-Book Flow ────────────────────────────────────────────────────
 
 /**
- * Complete auto-book: get details → book → return result.
+ * Complete auto-book: check conflicts → get details → book → return result.
  * Requires an authenticated session (call resyLogin first).
  */
 export async function autoBook(
@@ -230,6 +343,19 @@ export async function autoBook(
   restaurantName: string,
   time: string,
 ): Promise<BookingResult> {
+  // Step 0: Check for conflicts with existing reservations
+  const existing = await fetchExistingReservations(authToken);
+  if (hasTimeConflict(existing, date, time)) {
+    return {
+      success: false,
+      error: `Skipped — you already have a reservation near ${time} on ${date}`,
+      restaurantName,
+      date,
+      time,
+      partySize,
+    };
+  }
+
   // Step 1: Get booking token
   const details = await getSlotDetails(authToken, configToken, date, partySize);
   if (!details) {
@@ -249,6 +375,11 @@ export async function autoBook(
     details.bookToken,
     paymentMethodId,
   );
+
+  // Step 3: Refresh reservation cache after booking
+  if (result.success) {
+    lastReservationFetch = 0; // Force refresh on next check
+  }
 
   return {
     ...result,

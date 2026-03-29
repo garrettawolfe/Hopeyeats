@@ -18,8 +18,7 @@ export interface AppSettings {
   gmailAppPassword: string;
   smsPhone: string;
   smsCarrier: string;
-  // Auto-book
-  autoBookEnabled: boolean;
+  // (auto-book is per-restaurant, managed in page state)
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -34,7 +33,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   gmailAppPassword: "",
   smsPhone: "",
   smsCarrier: "verizon",
-  autoBookEnabled: false,
 };
 
 const STORAGE_KEY = "hopeyeats_v2_settings";
@@ -275,38 +273,24 @@ export default function SettingsDrawer({
             </div>
           </section>
 
-          {/* Auto-Book */}
+          {/* Auto-Book Info */}
           <section className="mb-8">
             <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider mb-3">
               Auto-Book
             </h3>
-            <label className="flex items-center justify-between p-4 bg-stone-50 rounded-xl cursor-pointer">
-              <div>
-                <p className="text-sm font-medium text-charcoal">
-                  Automatically book when slots appear
-                </p>
-                <p className="text-xs text-stone-400 mt-0.5">
-                  Books the first matching slot at each restaurant
-                </p>
-              </div>
-              <div
-                className={`w-11 h-6 rounded-full transition-colors relative ${
-                  local.autoBookEnabled ? "bg-emerald-500" : "bg-stone-300"
-                }`}
-                onClick={() => update({ autoBookEnabled: !local.autoBookEnabled })}
-              >
-                <div
-                  className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                    local.autoBookEnabled ? "translate-x-[22px]" : "translate-x-0.5"
-                  }`}
-                />
-              </div>
-            </label>
-            {local.autoBookEnabled && !resyAuth?.authenticated && (
-              <p className="text-xs text-amber-600 mt-2">
-                Connect your Resy account above to enable auto-booking.
+            <div className="p-4 bg-stone-50 rounded-xl">
+              <p className="text-sm text-stone-600">
+                Auto-book is configured <strong>per restaurant</strong>. Click the lightning bolt icon on any restaurant card to enable it.
               </p>
-            )}
+              <p className="text-xs text-stone-400 mt-2">
+                When enabled, the bot will automatically book the first available slot at that restaurant. It checks your existing Resy reservations to avoid conflicts (no double-booking within 2 hours).
+              </p>
+              {!resyAuth?.authenticated && (
+                <p className="text-xs text-amber-600 mt-2">
+                  Connect your Resy account above to enable auto-booking.
+                </p>
+              )}
+            </div>
           </section>
 
           {/* Notifications */}
