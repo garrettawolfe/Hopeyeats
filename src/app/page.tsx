@@ -1,251 +1,515 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { restaurants } from "@/data/restaurants";
-import type { UserSettings } from "@/lib/emailTemplates";
-import { getBookingContext } from "@/lib/emailTemplates";
-import Header from "@/components/Header";
-import RestaurantCard from "@/components/RestaurantCard";
-import SettingsPanel from "@/components/SettingsPanel";
-import ReservationMonitor from "@/components/ReservationMonitor";
+import type { AvailabilitySlot } from "@/lib/resyApi";
+import type { MonitorPollResult } from "@/lib/resyMonitor";
+import type { NotificationConfig } from "@/lib/notifications";
+import { buildSmsEmail } from "@/lib/notifications";
+import SettingsDrawer, {
+  loadSettings,
+  saveSettings,
+  type AppSettings,
+} from "@/components/SettingsDrawer";
+import RestaurantMonitorCard from "@/components/RestaurantMonitorCard";
 
-const SENT_KEY = "hopeyeats_sent";
+// All restaurants monitorable on Resy
+const resyRestaurants = restaurants.filter(
+  (r) =>
+    r.resyUrl !== null &&
+    (r.reservationMethod === "resy" || r.reservationMethod === "both"),
+);
 
-const DEFAULT_SETTINGS: UserSettings = {
-  name: "",
-  email: "",
-  gmailAppPassword: "",
-  diningDateStart: "",
-  diningDateEnd: "",
-  partySize: 2,
-  specialRequests: "",
-  preferredDays: ["wednesday", "thursday", "friday", "saturday"],
-  diningTimeStart: "18:30",
-  diningTimeEnd: "21:30",
-};
+interface BookingLog {
+  id: string;
+  restaurantName: string;
+  date: string;
+  time: string;
+  partySize: number;
+  status: "success" | "failed";
+  error?: string;
+  timestamp: string;
+}
 
-type SortKey = "bookSoonest" | "default" | "advanceDays" | "neighborhood";
-type FilterKey = "upcoming" | "all" | "hasEmail" | "resyOnly" | "michelin" | "sent" | "unsent";
-
-// Days until booking opens for a given restaurant + settings
-function daysUntilBooking(r: { advanceDays: number }, diningDateStart: string): number {
-  const ctx = getBookingContext(r.advanceDays, null, diningDateStart);
-  return ctx.daysUntilBooking;
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.floor(minutes / 60)}h ago`;
 }
 
 export default function Home() {
-  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [sentIds, setSentIds] = useState<Set<string>>(new Set());
-  const [sort, setSort] = useState<SortKey>("bookSoonest");
-  const [filter, setFilter] = useState<FilterKey>("upcoming");
-  const [search, setSearch] = useState("");
-  const [settingsReady, setSettingsReady] = useState(false);
+  const [resyAuth, setResyAuth] = useState<{
+    authenticated: boolean;
+    firstName?: string;
+    lastName?: string;
+  } | null>(null);
 
-  useEffect(() => {
-    const stored = localStorage.getItem(SENT_KEY);
-    if (stored) setSentIds(new Set(JSON.parse(stored)));
-    const storedSettings = localStorage.getItem("hopeyeats_settings");
-    if (storedSettings) {
-      setSettings(JSON.parse(storedSettings));
-    }
-    setSettingsReady(true);
-  }, []);
+  // Monitor state
+  const [monitoredIds, setMonitoredIds] = useState<Set<string>>(
+    () => new Set(resyRestaurants.map((r) => r.id)),
+  );
+  const [latestResult, setLatestResult] = useState<MonitorPollResult | null>(null);
+  const [allSlots, setAllSlots] = useState<Map<string, AvailabilitySlot[]>>(new Map());
+  const [newSlotIds, setNewSlotIds] = useState<Set<string>>(new Set());
+  const [pollCount, setPollCount] = useState(0);
+  const [isPolling, setIsPolling] = useState(false);
+  const [lastPollTime, setLastPollTime] = useState<string | null>(null);
+  const [, setTick] = useState(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  function markSent(id: string) {
-    setSentIds((prev) => {
-      const next = new Set(prev).add(id);
-      localStorage.setItem(SENT_KEY, JSON.stringify([...next]));
-      return next;
-    });
-  }
-
-  const handleSettingsChange = useCallback((s: UserSettings) => {
-    setSettings(s);
-  }, []);
+  // Booking
+  const [bookingInProgress, setBookingInProgress] = useState<string | null>(null);
+  const [bookingLog, setBookingLog] = useState<BookingLog[]>([]);
 
   // Filter
-  const filtered = restaurants.filter((r) => {
-    const hasEmail = r.reservationEmail !== null || r.contactEmail !== null;
+  const [search, setSearch] = useState("");
+  const [filterMode, setFilterMode] = useState<"all" | "available" | "monitored">("all");
 
-    if (filter === "upcoming") {
-      // Only show restaurants where the booking window is today or in the future
-      const days = daysUntilBooking(r, settings.diningDateStart);
-      if (days < 0) return false;
-      // Without a specific dining date, cap at 5-week dining window
-      if (!settings.diningDateStart && r.advanceDays > 35) return false;
+  // Load settings from localStorage
+  useEffect(() => {
+    setSettings(loadSettings());
+  }, []);
+
+  // Check auth status on load
+  useEffect(() => {
+    fetch("/api/resy-auth")
+      .then((r) => r.json())
+      .then(setResyAuth)
+      .catch(() => setResyAuth({ authenticated: false }));
+  }, []);
+
+  // Tick for time-ago updates
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 10000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Build notification config from settings
+  const buildNotificationConfig = useCallback((): NotificationConfig => {
+    if (!settings) return {};
+    const config: NotificationConfig = {};
+
+    if (settings.notifyEmail && settings.gmailUser && settings.gmailAppPassword) {
+      config.email = {
+        enabled: true,
+        to: settings.notifyEmail,
+        gmailUser: settings.gmailUser,
+        gmailAppPassword: settings.gmailAppPassword,
+      };
     }
-    if (filter === "hasEmail" && !hasEmail) return false;
-    if (filter === "resyOnly" && hasEmail) return false;
-    if (filter === "michelin" && !r.michelinStar && !r.bibGourmand) return false;
-    if (filter === "sent" && !sentIds.has(r.id)) return false;
-    if (filter === "unsent" && sentIds.has(r.id)) return false;
+
+    if (settings.smsPhone && settings.smsCarrier && settings.gmailUser && settings.gmailAppPassword) {
+      const smsAddr = buildSmsEmail(settings.smsPhone, settings.smsCarrier);
+      if (smsAddr) {
+        config.email = {
+          enabled: true,
+          to: smsAddr,
+          gmailUser: settings.gmailUser,
+          gmailAppPassword: settings.gmailAppPassword,
+        };
+      }
+    }
+
+    return config;
+  }, [settings]);
+
+  // Poll function
+  const poll = useCallback(async () => {
+    if (monitoredIds.size === 0) return;
+    setIsPolling(true);
+
+    try {
+      const res = await fetch("/api/resy-monitor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          restaurantIds: Array.from(monitoredIds),
+          partySize: settings?.partySize ?? 2,
+          resolveIds: true,
+          notifications: buildNotificationConfig(),
+        }),
+      });
+
+      if (!res.ok) return;
+
+      const result: MonitorPollResult = await res.json();
+      const now = new Date().toISOString();
+
+      setLatestResult(result);
+      setLastPollTime(now);
+      setPollCount((c) => c + 1);
+
+      // Update per-restaurant slot maps
+      const nextSlots = new Map(allSlots);
+      const nextNewIds = new Set<string>();
+
+      for (const diff of result.diffs) {
+        nextSlots.set(diff.restaurant.id, diff.newSlots.length > 0
+          ? [...(nextSlots.get(diff.restaurant.id) || []), ...diff.newSlots]
+          : (diff.totalAvailable > 0 ? nextSlots.get(diff.restaurant.id) || [] : [])
+        );
+
+        // Track all current slots for this restaurant
+        // We need to rebuild from what the API tells us
+        if (diff.newSlots.length > 0 && !result.isBaseline) {
+          for (const slot of diff.newSlots) {
+            nextNewIds.add(slot.id);
+          }
+        }
+      }
+
+      setAllSlots(nextSlots);
+      setNewSlotIds(nextNewIds);
+
+      // Auto-book new slots if enabled
+      if (
+        settings?.autoBookEnabled &&
+        resyAuth?.authenticated &&
+        !result.isBaseline
+      ) {
+        for (const diff of result.diffs) {
+          if (diff.newSlots.length > 0) {
+            // Book the first matching slot
+            const slot = diff.newSlots[0];
+            handleBook(slot);
+            break; // One booking at a time
+          }
+        }
+      }
+
+      // Browser notification
+      if (!result.isBaseline) {
+        const totalNew = result.diffs.reduce((sum, d) => sum + d.newSlots.length, 0);
+        if (totalNew > 0 && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          new Notification("New Resy Reservations!", {
+            body: `${totalNew} new slot${totalNew !== 1 ? "s" : ""} found`,
+            tag: "hopeyeats",
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Poll error:", err);
+    } finally {
+      setIsPolling(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monitoredIds, settings, resyAuth, buildNotificationConfig]);
+
+  // Start auto-monitoring on mount
+  useEffect(() => {
+    if (!settings) return;
+
+    // Request notification permission
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+
+    // Initial poll
+    poll();
+
+    // Set up interval with jitter
+    const baseInterval = 60_000; // 60 seconds
+    const jitter = baseInterval * (0.85 + Math.random() * 0.3);
+    intervalRef.current = setInterval(poll, jitter);
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings !== null]); // Only run once settings are loaded
+
+  // Book a slot
+  const handleBook = async (slot: AvailabilitySlot) => {
+    setBookingInProgress(slot.id);
+    try {
+      const res = await fetch("/api/resy-book", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          configToken: slot.configToken,
+          date: slot.date,
+          partySize: settings?.partySize ?? 2,
+          restaurantName: slot.venueName,
+          time: slot.time,
+        }),
+      });
+
+      const data = await res.json();
+      const log: BookingLog = {
+        id: slot.id,
+        restaurantName: slot.venueName,
+        date: slot.date,
+        time: slot.time,
+        partySize: settings?.partySize ?? 2,
+        status: data.success ? "success" : "failed",
+        error: data.error,
+        timestamp: new Date().toISOString(),
+      };
+      setBookingLog((prev) => [log, ...prev].slice(0, 50));
+    } catch (err) {
+      console.error("Booking error:", err);
+    } finally {
+      setBookingInProgress(null);
+    }
+  };
+
+  // Toggle monitoring for a restaurant
+  const toggleMonitor = (id: string) => {
+    setMonitoredIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // Resy auth handlers
+  const handleResyLogin = async (email: string, password: string): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/resy-auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (data.authenticated) {
+        setResyAuth(data);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleResyLogout = async () => {
+    await fetch("/api/resy-auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "logout" }),
+    });
+    setResyAuth({ authenticated: false });
+  };
+
+  // Filter & sort restaurants
+  const filtered = resyRestaurants.filter((r) => {
+    if (filterMode === "available" && (allSlots.get(r.id)?.length ?? 0) === 0) return false;
+    if (filterMode === "monitored" && !monitoredIds.has(r.id)) return false;
 
     if (search) {
       const q = search.toLowerCase();
       return (
         r.name.toLowerCase().includes(q) ||
         r.neighborhood.toLowerCase().includes(q) ||
-        r.cuisine.toLowerCase().includes(q) ||
-        r.tags.some((t) => t.toLowerCase().includes(q))
+        r.cuisine.toLowerCase().includes(q)
       );
     }
     return true;
   });
 
-  // Sort
+  // Sort: available first, then monitored, then rest
   const sorted = [...filtered].sort((a, b) => {
-    if (sort === "bookSoonest") {
-      // Sort by days until booking opens (most urgent first)
-      // Without dining date, advanceDays IS the proxy (fewer = dine sooner)
-      return daysUntilBooking(a, settings.diningDateStart) - daysUntilBooking(b, settings.diningDateStart);
-    }
-    if (sort === "advanceDays") return a.advanceDays - b.advanceDays;
-    if (sort === "neighborhood") return a.neighborhood.localeCompare(b.neighborhood);
-    return 0;
+    const aSlots = allSlots.get(a.id)?.length ?? 0;
+    const bSlots = allSlots.get(b.id)?.length ?? 0;
+    if (aSlots > 0 && bSlots === 0) return -1;
+    if (bSlots > 0 && aSlots === 0) return 1;
+    return a.name.localeCompare(b.name);
   });
 
-  // Today context for the header bar
-  const todayStr = new Date().toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  });
+  const totalSlots = Array.from(allSlots.values()).reduce(
+    (sum, slots) => sum + slots.length,
+    0,
+  );
+  const totalNewSlots = newSlotIds.size;
 
-  const settingsComplete = !!settings.email;
+  if (!settings) return null; // Loading
 
   return (
-    <>
-      <Header
-        sentCount={sentIds.size}
-        totalCount={restaurants.length}
-        onSettingsOpen={() => setShowSettings(true)}
-      />
-
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Setup Banner */}
-        {settingsReady && !settingsComplete && (
-          <div className="mb-8 bg-[#C9A84C]/10 border border-[#C9A84C]/30 rounded-2xl px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <div className="min-h-screen bg-cream">
+      {/* Header */}
+      <header className="sticky top-0 z-30 bg-charcoal text-white">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+          <div className="flex items-center justify-between">
             <div>
-              <p className="font-medium text-[#1C1C1C]">
-                Set up your profile to start sending
+              <h1 className="font-serif text-2xl tracking-tight">HopeYeats</h1>
+              <p className="text-stone-400 text-xs mt-0.5 tracking-wide">
+                NYC Restaurant Reservation Monitor
+              </p>
+            </div>
+            <div className="flex items-center gap-4">
+              {/* Status pill */}
+              <div className="hidden sm:flex items-center gap-2 text-xs text-stone-400">
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    isPolling
+                      ? "bg-amber-400 animate-pulse"
+                      : totalSlots > 0
+                        ? "bg-emerald-500 animate-pulse"
+                        : "bg-stone-500"
+                  }`}
+                />
+                {isPolling
+                  ? "Scanning..."
+                  : lastPollTime
+                    ? `Poll #${pollCount} · ${timeAgo(lastPollTime)}`
+                    : "Starting..."}
+              </div>
+
+              {/* Auth indicator */}
+              {resyAuth?.authenticated && (
+                <span className="hidden sm:inline text-xs text-emerald-400 bg-emerald-400/10 px-2 py-1 rounded-full">
+                  {resyAuth.firstName}
+                </span>
+              )}
+
+              <button
+                onClick={() => setShowSettings(true)}
+                className="flex items-center gap-2 text-sm text-stone-300 hover:text-white transition-colors border border-stone-700 hover:border-stone-500 px-4 py-2 rounded-lg"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                  />
+                </svg>
+                Settings
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Status Bar */}
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-4 text-sm">
+            <span className="text-stone-600">
+              <strong className="text-charcoal">{monitoredIds.size}</strong> restaurants monitored
+            </span>
+            {totalSlots > 0 && (
+              <span className="text-emerald-600 font-medium">
+                {totalSlots} slot{totalSlots !== 1 ? "s" : ""} available
+              </span>
+            )}
+            {totalNewSlots > 0 && (
+              <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full text-xs animate-pulse">
+                {totalNewSlots} NEW
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() =>
+                setMonitoredIds(new Set(resyRestaurants.map((r) => r.id)))
+              }
+              className="text-xs text-stone-400 hover:text-stone-600 underline"
+            >
+              Monitor All
+            </button>
+            <button
+              onClick={() => setMonitoredIds(new Set())}
+              className="text-xs text-stone-400 hover:text-stone-600 underline"
+            >
+              Clear
+            </button>
+            <button
+              onClick={poll}
+              disabled={isPolling}
+              className="px-3 py-1.5 bg-charcoal text-white rounded-lg text-xs font-medium hover:bg-charcoal/80 transition-colors disabled:opacity-40"
+            >
+              {isPolling ? "Scanning..." : "Scan Now"}
+            </button>
+          </div>
+        </div>
+
+        {/* Booking Activity */}
+        {bookingLog.length > 0 && (
+          <div className="mb-6 bg-white border border-stone-200 rounded-2xl p-4">
+            <h2 className="text-sm font-semibold text-charcoal mb-2">
+              Recent Bookings
+            </h2>
+            <div className="space-y-1.5 max-h-32 overflow-y-auto">
+              {bookingLog.map((log, i) => (
+                <div
+                  key={i}
+                  className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs ${
+                    log.status === "success"
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-red-50 text-red-600"
+                  }`}
+                >
+                  <span>
+                    {log.status === "success" ? "Booked" : "Failed"}: {log.restaurantName} on {log.date} at {log.time}
+                  </span>
+                  <span className="text-stone-400">{timeAgo(log.timestamp)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Not authenticated banner */}
+        {!resyAuth?.authenticated && (
+          <div className="mb-6 bg-gold/10 border border-gold/30 rounded-2xl px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <p className="font-medium text-charcoal">
+                Connect your Resy account for auto-booking
               </p>
               <p className="text-sm text-stone-500 mt-0.5">
-                Add your Gmail credentials to enable one-click emails and
-                reminders. Booking windows are already shown below.
+                Without it, you can still monitor and manually book via Resy links.
               </p>
             </div>
             <button
               onClick={() => setShowSettings(true)}
-              className="shrink-0 px-5 py-2.5 bg-[#1C1C1C] text-white rounded-xl text-sm font-medium hover:bg-[#333] transition-colors"
+              className="shrink-0 px-5 py-2.5 bg-charcoal text-white rounded-xl text-sm font-medium hover:bg-charcoal/90 transition-colors"
             >
               Open Settings
             </button>
           </div>
         )}
 
-        {/* Today context bar */}
-        <div className="mb-6 flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-2 text-sm text-stone-500">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
-            <span>
-              <strong className="text-stone-700">{todayStr}</strong>
-              {settings.diningDateStart ? (
-                <>
-                  {" "}· Targeting{" "}
-                  <strong className="text-stone-700">
-                    {new Date(settings.diningDateStart + "T00:00:00").toLocaleDateString(
-                      "en-US",
-                      { month: "long", day: "numeric" }
-                    )}
-                    {settings.diningDateEnd &&
-                      settings.diningDateEnd !== settings.diningDateStart &&
-                      ` – ${new Date(settings.diningDateEnd + "T00:00:00").toLocaleDateString(
-                        "en-US",
-                        { month: "long", day: "numeric" }
-                      )}`}
-                  </strong>
-                  {" "}· Party of {settings.partySize}
-                </>
-              ) : (
-                <span className="text-stone-400">
-                  {" "}· Showing next 5 weeks of booking windows
-                </span>
-              )}
-            </span>
-          </div>
-          {settings.diningDateStart && (
-            <button
-              onClick={() => setShowSettings(true)}
-              className="text-xs text-stone-400 underline hover:text-stone-600"
-            >
-              Change dates
-            </button>
-          )}
-        </div>
-
-        {/* Filters + Sort + Search */}
-        <div className="flex flex-col sm:flex-row gap-3 mb-8">
+        {/* Search & Filter */}
+        <div className="flex flex-col sm:flex-row gap-3 mb-6">
           <input
             type="text"
-            placeholder="Search restaurants, neighborhoods, cuisines…"
+            placeholder="Search restaurants, neighborhoods, cuisines..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 px-4 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/50 bg-white"
+            className="flex-1 px-4 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50 bg-white"
           />
-          <div className="flex gap-2 flex-wrap">
-            <select
-              value={filter}
-              onChange={(e) => setFilter(e.target.value as FilterKey)}
-              className="px-3 py-2.5 border border-stone-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/50 text-stone-600"
-            >
-              <option value="upcoming">Next 5 Weeks</option>
-              <option value="all">All ({restaurants.length})</option>
-              <option value="hasEmail">Email Available</option>
-              <option value="resyOnly">Resy Only</option>
-              <option value="michelin">Michelin Recognized</option>
-              <option value="sent">Contacted</option>
-              <option value="unsent">Not Yet Contacted</option>
-            </select>
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value as SortKey)}
-              className="px-3 py-2.5 border border-stone-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/50 text-stone-600"
-            >
-              <option value="bookSoonest">Sort: Book Soonest</option>
-              <option value="default">Sort: Default</option>
-              <option value="advanceDays">Sort: Advance Days</option>
-              <option value="neighborhood">Sort: Neighborhood</option>
-            </select>
+          <div className="flex gap-1.5">
+            {(["all", "available", "monitored"] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setFilterMode(mode)}
+                className={`px-4 py-2.5 rounded-xl text-sm font-medium transition-colors capitalize ${
+                  filterMode === mode
+                    ? "bg-charcoal text-white"
+                    : "bg-white border border-stone-200 text-stone-500 hover:bg-stone-50"
+                }`}
+              >
+                {mode === "available" ? `Available (${totalSlots})` : mode}
+              </button>
+            ))}
           </div>
-        </div>
-
-        {/* Legend */}
-        <div className="flex items-center gap-4 mb-6 flex-wrap text-xs text-stone-400">
-          <span className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            Book Today
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-amber-400" />
-            Book within 6 days
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-stone-300" />
-            Upcoming window
-          </span>
-          <span className="flex items-center gap-1.5">
-            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
-            Calendar = set booking alert (15 min heads-up)
-          </span>
-        </div>
-
-        {/* Reservation Monitor */}
-        <div className="mb-8">
-          <ReservationMonitor partySize={settings.partySize} gmailUser={settings.email} gmailAppPassword={settings.gmailAppPassword} />
         </div>
 
         {/* Restaurant Grid */}
@@ -254,7 +518,7 @@ export default function Home() {
             <p className="text-lg mb-2">No restaurants match your filters</p>
             <button
               onClick={() => {
-                setFilter("upcoming");
+                setFilterMode("all");
                 setSearch("");
               }}
               className="text-sm underline hover:text-stone-600"
@@ -263,38 +527,64 @@ export default function Home() {
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {sorted.map((r) => (
-              <RestaurantCard
-                key={r.id}
-                restaurant={r}
-                settings={settings}
-                isSent={sentIds.has(r.id)}
-                onSent={markSent}
-              />
-            ))}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {sorted.map((r) => {
+              // Find last check time from latest result
+              const diff = latestResult?.diffs.find(
+                (d) => d.restaurant.id === r.id,
+              );
+              return (
+                <RestaurantMonitorCard
+                  key={r.id}
+                  restaurant={r}
+                  slots={allSlots.get(r.id) ?? []}
+                  newSlotIds={newSlotIds}
+                  isMonitored={monitoredIds.has(r.id)}
+                  autoBookEnabled={settings.autoBookEnabled}
+                  isAuthenticated={resyAuth?.authenticated ?? false}
+                  onToggleMonitor={toggleMonitor}
+                  onBook={handleBook}
+                  bookingInProgress={bookingInProgress}
+                  lastChecked={diff?.checkedAt ?? null}
+                />
+              );
+            })}
+          </div>
+        )}
+
+        {/* Rate limit info */}
+        {latestResult?.rateLimitStats?.isBackedOff && (
+          <div className="mt-6 bg-orange-50 border border-orange-200 rounded-xl px-4 py-3 text-sm text-orange-700">
+            Rate limited — backing off for{" "}
+            {Math.round((latestResult.rateLimitStats.backoffRemaining ?? 0) / 1000)}s
           </div>
         )}
 
         {/* Footer */}
         <footer className="mt-16 pt-8 border-t border-stone-200 text-center text-xs text-stone-400">
           <p>
-            HopeYeats · NYC Dining Command Center · Reservation data sourced from
-            The Infatuation, Resy, and restaurant websites.
+            HopeYeats · NYC Restaurant Reservation Sniper · Monitoring{" "}
+            {resyRestaurants.length} restaurants on Resy.
           </p>
           <p className="mt-1">
-            Your Gmail credentials are stored locally in your browser and
-            transmitted only when you click Send.
+            Your credentials are stored locally in your browser. Resy auth tokens are server-side only.
           </p>
         </footer>
       </main>
 
-      {showSettings && (
-        <SettingsPanel
-          onClose={() => setShowSettings(false)}
-          onChange={handleSettingsChange}
-        />
-      )}
-    </>
+      {/* Settings Drawer */}
+      <SettingsDrawer
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+        settings={settings}
+        onSettingsChange={(s) => {
+          setSettings(s);
+          saveSettings(s);
+        }}
+        resyAuth={resyAuth}
+        onResyLogin={handleResyLogin}
+        onResyLogout={handleResyLogout}
+      />
+    </div>
   );
 }
