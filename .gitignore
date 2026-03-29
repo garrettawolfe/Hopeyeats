@@ -16,3 +16,6 @@ out/
 .DS_Store
 *.pem
 npm-debug.log*
+
+# typescript
+*.tsbuildinfo
