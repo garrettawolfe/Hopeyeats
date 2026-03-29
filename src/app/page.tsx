@@ -245,7 +245,7 @@ export default function Home() {
 
         {/* Reservation Monitor */}
         <div className="mb-8">
-          <ReservationMonitor partySize={settings.partySize} />
+          <ReservationMonitor partySize={settings.partySize} gmailUser={settings.email} gmailAppPassword={settings.gmailAppPassword} />
         </div>
 
         {/* Restaurant Grid */}

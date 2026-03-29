@@ -18,12 +18,19 @@ import {
   type MonitorPollResult,
   type SerializableSlotDiff,
 } from "@/lib/resyMonitor";
+import {
+  sendNotifications,
+  type NotificationConfig,
+} from "@/lib/notifications";
 
 // In-memory monitor state (persists across requests while the server runs)
 let monitorState: MonitorState = createMonitorState();
 
 // Cache resolved venue IDs so we don't re-resolve every poll
 const venueIdCache = new Map<string, number>();
+
+// Persisted notification config (set via POST, used on every poll)
+let notificationConfig: NotificationConfig = {};
 
 /** Small random delay between batches (2-5s). */
 function batchDelay(): Promise<void> {
@@ -42,6 +49,7 @@ function batchDelay(): Promise<void> {
  *   daysAhead?: number        — how many days forward to scan (overrides per-restaurant advanceDays)
  *   reset?: boolean           — reset monitor state (clear baseline)
  *   resolveIds?: boolean      — attempt to resolve missing venue IDs via Resy API
+ *   notifications?: NotificationConfig — configure notification channels
  * }
  */
 export async function POST(request: Request) {
@@ -53,13 +61,20 @@ export async function POST(request: Request) {
       daysAhead,
       reset = false,
       resolveIds = false,
+      notifications,
     } = body as {
       restaurantIds?: string[];
       partySize?: number;
       daysAhead?: number;
       reset?: boolean;
       resolveIds?: boolean;
+      notifications?: NotificationConfig;
     };
+
+    // Update notification config if provided
+    if (notifications) {
+      notificationConfig = notifications;
+    }
 
     if (reset) {
       monitorState = createMonitorState();
@@ -176,6 +191,25 @@ export async function POST(request: Request) {
     monitorState.pollCount++;
     monitorState.lastPollAt = new Date().toISOString();
 
+    // ── Send notifications for new slots (skip baseline) ────────────────
+    let notifyResult: { sent: string[]; failed: string[] } | undefined;
+    if (!isBaseline) {
+      const alerts = diffs
+        .filter((d) => d.newSlots.length > 0)
+        .map((d) => ({ restaurant: d.restaurant, newSlots: d.newSlots }));
+
+      if (alerts.length > 0) {
+        // Derive base URL from the request
+        const url = new URL(request.url);
+        const baseUrl = `${url.protocol}//${url.host}`;
+        notifyResult = await sendNotifications(
+          notificationConfig,
+          alerts,
+          baseUrl,
+        );
+      }
+    }
+
     const result: MonitorPollResult = {
       diffs,
       pollCount: monitorState.pollCount,
@@ -183,6 +217,8 @@ export async function POST(request: Request) {
       isBaseline,
       summary: formatPollSummary(diffs, isBaseline),
       rateLimitStats: getRateLimitStats(),
+      notificationsSent: notifyResult?.sent,
+      notificationsFailed: notifyResult?.failed,
     };
 
     return NextResponse.json(result);

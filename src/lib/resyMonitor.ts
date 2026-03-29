@@ -227,6 +227,8 @@ export interface MonitorPollResult {
     isBackedOff: boolean;
     backoffRemaining: number;
   };
+  notificationsSent?: string[];
+  notificationsFailed?: string[];
 }
 
 /**

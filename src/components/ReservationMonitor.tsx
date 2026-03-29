@@ -4,9 +4,13 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { restaurants } from "@/data/restaurants";
 import type { AvailabilitySlot } from "@/lib/resyApi";
 import type { MonitorPollResult, SerializableSlotDiff } from "@/lib/resyMonitor";
+import type { NotificationConfig } from "@/lib/notifications";
+import { SMS_GATEWAYS, buildSmsEmail } from "@/lib/notifications";
 
 interface Props {
   partySize: number;
+  gmailUser?: string;
+  gmailAppPassword?: string;
 }
 
 type MonitorStatus = "idle" | "polling" | "running" | "error" | "rate-limited";
@@ -50,7 +54,7 @@ const resyRestaurants = restaurants.filter(
     (r.reservationMethod === "resy" || r.reservationMethod === "both"),
 );
 
-export default function ReservationMonitor({ partySize }: Props) {
+export default function ReservationMonitor({ partySize, gmailUser, gmailAppPassword }: Props) {
   const [status, setStatus] = useState<MonitorStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
@@ -69,6 +73,48 @@ export default function ReservationMonitor({ partySize }: Props) {
   const [, setTick] = useState(0);
   const [showRestaurants, setShowRestaurants] = useState(false);
   const [notifySound, setNotifySound] = useState(true);
+  const [showNotifySettings, setShowNotifySettings] = useState(false);
+
+  // Notification config
+  const [notifyEmail, setNotifyEmail] = useState(false);
+  const [notifyEmailTo, setNotifyEmailTo] = useState("");
+  const [notifyEmailMode, setNotifyEmailMode] = useState<"email" | "sms">("email");
+  const [smsPhone, setSmsPhone] = useState("");
+  const [smsCarrier, setSmsCarrier] = useState("verizon");
+  const [notifyWebhook, setNotifyWebhook] = useState(false);
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookType, setWebhookType] = useState<"discord" | "slack" | "generic">("discord");
+  const [notifyNtfy, setNotifyNtfy] = useState(false);
+  const [ntfyTopic, setNtfyTopic] = useState("hopeyeats-alerts");
+
+  /** Build notification config from UI state. */
+  function buildNotificationConfig(): NotificationConfig {
+    const config: NotificationConfig = {};
+
+    if (notifyEmail) {
+      const to = notifyEmailMode === "sms"
+        ? buildSmsEmail(smsPhone, smsCarrier)
+        : notifyEmailTo;
+      if (to && gmailUser && gmailAppPassword) {
+        config.email = {
+          enabled: true,
+          to,
+          gmailUser,
+          gmailAppPassword,
+        };
+      }
+    }
+
+    if (notifyWebhook && webhookUrl) {
+      config.webhook = { enabled: true, url: webhookUrl, type: webhookType };
+    }
+
+    if (notifyNtfy && ntfyTopic) {
+      config.ntfy = { enabled: true, topic: ntfyTopic };
+    }
+
+    return config;
+  }
 
   // Tick every 10s to update "time ago" displays
   useEffect(() => {
@@ -108,6 +154,7 @@ export default function ReservationMonitor({ partySize }: Props) {
           restaurantIds: Array.from(selectedIds),
           partySize,
           resolveIds,
+          notifications: buildNotificationConfig(),
         }),
       });
 
@@ -406,6 +453,177 @@ export default function ReservationMonitor({ partySize }: Props) {
               </>
             )}
           </div>
+
+          {/* Notification Settings (collapsible) */}
+          <div className="mb-4">
+            <button
+              onClick={() => setShowNotifySettings(!showNotifySettings)}
+              className="flex items-center gap-2 mb-2 text-sm font-medium text-stone-600 hover:text-stone-800"
+            >
+              <svg
+                className={`w-3.5 h-3.5 transition-transform ${showNotifySettings ? "rotate-90" : ""}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9 5l7 7-7 7"
+                />
+              </svg>
+              Notification Settings
+              {(notifyEmail || notifyWebhook || notifyNtfy) && (
+                <span className="text-[10px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full">
+                  {[notifyEmail && "email", notifyWebhook && "webhook", notifyNtfy && "ntfy"].filter(Boolean).join(", ")}
+                </span>
+              )}
+            </button>
+            {showNotifySettings && (
+              <div className="bg-stone-50 rounded-xl p-4 space-y-4 text-sm">
+                {/* Email / SMS */}
+                <div>
+                  <label className="flex items-center gap-2 font-medium text-stone-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={notifyEmail}
+                      onChange={(e) => setNotifyEmail(e.target.checked)}
+                      className="rounded border-stone-300 text-[#1C1C1C] focus:ring-[#C9A84C]"
+                    />
+                    Email / SMS Alerts
+                  </label>
+                  {notifyEmail && (
+                    <div className="mt-2 ml-6 space-y-2">
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setNotifyEmailMode("email")}
+                          className={`px-3 py-1 rounded-lg text-xs font-medium ${notifyEmailMode === "email" ? "bg-[#1C1C1C] text-white" : "bg-stone-200 text-stone-500"}`}
+                        >
+                          Email
+                        </button>
+                        <button
+                          onClick={() => setNotifyEmailMode("sms")}
+                          className={`px-3 py-1 rounded-lg text-xs font-medium ${notifyEmailMode === "sms" ? "bg-[#1C1C1C] text-white" : "bg-stone-200 text-stone-500"}`}
+                        >
+                          SMS (via email gateway)
+                        </button>
+                      </div>
+                      {notifyEmailMode === "email" ? (
+                        <input
+                          type="email"
+                          placeholder="your@email.com"
+                          value={notifyEmailTo}
+                          onChange={(e) => setNotifyEmailTo(e.target.value)}
+                          className="w-full px-3 py-1.5 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-[#C9A84C]"
+                        />
+                      ) : (
+                        <div className="flex gap-2">
+                          <input
+                            type="tel"
+                            placeholder="5551234567"
+                            value={smsPhone}
+                            onChange={(e) => setSmsPhone(e.target.value)}
+                            className="flex-1 px-3 py-1.5 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-[#C9A84C]"
+                          />
+                          <select
+                            value={smsCarrier}
+                            onChange={(e) => setSmsCarrier(e.target.value)}
+                            className="px-2 py-1.5 border border-stone-200 rounded-lg text-xs bg-white"
+                          >
+                            {Object.keys(SMS_GATEWAYS).map((c) => (
+                              <option key={c} value={c}>
+                                {c.charAt(0).toUpperCase() + c.slice(1)}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      {!gmailUser && (
+                        <p className="text-[10px] text-amber-600">
+                          Gmail credentials required — set them in Settings above.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Webhook */}
+                <div>
+                  <label className="flex items-center gap-2 font-medium text-stone-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={notifyWebhook}
+                      onChange={(e) => setNotifyWebhook(e.target.checked)}
+                      className="rounded border-stone-300 text-[#1C1C1C] focus:ring-[#C9A84C]"
+                    />
+                    Webhook (Discord / Slack)
+                  </label>
+                  {notifyWebhook && (
+                    <div className="mt-2 ml-6 space-y-2">
+                      <div className="flex gap-2">
+                        {(["discord", "slack", "generic"] as const).map((t) => (
+                          <button
+                            key={t}
+                            onClick={() => setWebhookType(t)}
+                            className={`px-3 py-1 rounded-lg text-xs font-medium capitalize ${webhookType === t ? "bg-[#1C1C1C] text-white" : "bg-stone-200 text-stone-500"}`}
+                          >
+                            {t}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        type="url"
+                        placeholder="https://discord.com/api/webhooks/..."
+                        value={webhookUrl}
+                        onChange={(e) => setWebhookUrl(e.target.value)}
+                        className="w-full px-3 py-1.5 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-[#C9A84C]"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* ntfy.sh */}
+                <div>
+                  <label className="flex items-center gap-2 font-medium text-stone-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={notifyNtfy}
+                      onChange={(e) => setNotifyNtfy(e.target.checked)}
+                      className="rounded border-stone-300 text-[#1C1C1C] focus:ring-[#C9A84C]"
+                    />
+                    Push Notifications (ntfy.sh)
+                  </label>
+                  {notifyNtfy && (
+                    <div className="mt-2 ml-6 space-y-1">
+                      <input
+                        type="text"
+                        placeholder="hopeyeats-alerts"
+                        value={ntfyTopic}
+                        onChange={(e) => setNtfyTopic(e.target.value)}
+                        className="w-full px-3 py-1.5 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-[#C9A84C]"
+                      />
+                      <p className="text-[10px] text-stone-400">
+                        Free push notifications — install the ntfy app and subscribe to your topic. No account needed.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Notification Delivery Status */}
+          {latestResult?.notificationsSent && latestResult.notificationsSent.length > 0 && (
+            <div className="mb-4 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2 text-xs text-emerald-700">
+              Notifications sent: {latestResult.notificationsSent.join(", ")}
+            </div>
+          )}
+          {latestResult?.notificationsFailed && latestResult.notificationsFailed.length > 0 && (
+            <div className="mb-4 bg-red-50 border border-red-200 rounded-xl px-4 py-2 text-xs text-red-600">
+              Notification failures: {latestResult.notificationsFailed.join(", ")}
+            </div>
+          )}
 
           {/* Error */}
           {error && (
