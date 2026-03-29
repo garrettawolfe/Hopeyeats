@@ -5,6 +5,16 @@ import type { UserSettings } from "@/lib/emailTemplates";
 
 const STORAGE_KEY = "hopeyeats_settings";
 
+const ALL_DAYS = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+  "Sunday",
+];
+
 const DEFAULT_SETTINGS: UserSettings = {
   name: "",
   email: "",
@@ -13,6 +23,9 @@ const DEFAULT_SETTINGS: UserSettings = {
   diningDateEnd: "",
   partySize: 2,
   specialRequests: "",
+  preferredDays: ["wednesday", "thursday", "friday", "saturday"],
+  diningTimeStart: "18:30",
+  diningTimeEnd: "21:30",
 };
 
 interface Props {
@@ -29,8 +42,13 @@ export default function SettingsPanel({ onClose, onChange }: Props) {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored) as UserSettings;
-      setSettings(parsed);
-      onChange(parsed);
+      // Backfill new fields for existing users
+      const merged: UserSettings = {
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+      };
+      setSettings(merged);
+      onChange(merged);
     }
   }, [onChange]);
 
@@ -38,11 +56,29 @@ export default function SettingsPanel({ onClose, onChange }: Props) {
     setSettings((prev) => ({ ...prev, [key]: value }));
   }
 
+  function toggleDay(day: string) {
+    const lower = day.toLowerCase();
+    setSettings((prev) => ({
+      ...prev,
+      preferredDays: prev.preferredDays.includes(lower)
+        ? prev.preferredDays.filter((d) => d !== lower)
+        : [...prev.preferredDays, lower],
+    }));
+  }
+
   function save() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
     onChange(settings);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  }
+
+  function formatTimeDisplay(t: string) {
+    if (!t) return "";
+    const [h, m] = t.split(":").map(Number);
+    const ampm = h >= 12 ? "PM" : "AM";
+    const h12 = h % 12 || 12;
+    return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
   }
 
   return (
@@ -132,11 +168,15 @@ export default function SettingsPanel({ onClose, onChange }: Props) {
             </div>
           </section>
 
-          {/* Dining Preferences */}
+          {/* Dining Window */}
           <section>
             <h3 className="text-xs font-semibold uppercase tracking-widest text-stone-400 mb-3">
-              Dining Window
+              Target Dining Dates
             </h3>
+            <p className="text-xs text-stone-400 mb-3">
+              Optional — narrows booking window calculations to specific dates.
+              Without dates, the app shows the next available slot from today.
+            </p>
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -168,9 +208,7 @@ export default function SettingsPanel({ onClose, onChange }: Props) {
                 </label>
                 <select
                   value={settings.partySize}
-                  onChange={(e) =>
-                    update("partySize", parseInt(e.target.value))
-                  }
+                  onChange={(e) => update("partySize", parseInt(e.target.value))}
                   className="w-full px-3 py-2 border border-stone-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/50 bg-white"
                 >
                   {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
@@ -194,6 +232,78 @@ export default function SettingsPanel({ onClose, onChange }: Props) {
               </div>
             </div>
           </section>
+
+          {/* Resy Preferences */}
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-widest text-stone-400 mb-1">
+              Resy Link Preferences
+            </h3>
+            <p className="text-xs text-stone-400 mb-3">
+              Resy links open pre-filtered to your preferred days and party size.
+              The date snaps to the nearest preferred day at or after the booking window.
+            </p>
+
+            {/* Day picker */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-stone-700 mb-2">
+                Preferred Days
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {ALL_DAYS.map((day) => {
+                  const active = settings.preferredDays.includes(day.toLowerCase());
+                  return (
+                    <button
+                      key={day}
+                      type="button"
+                      onClick={() => toggleDay(day)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                        active
+                          ? "bg-[#1C1C1C] text-white"
+                          : "bg-stone-100 text-stone-500 hover:bg-stone-200"
+                      }`}
+                    >
+                      {day.slice(0, 3)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Time window */}
+            <div>
+              <label className="block text-sm font-medium text-stone-700 mb-2">
+                Preferred Time Window
+              </label>
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <input
+                    type="time"
+                    value={settings.diningTimeStart}
+                    onChange={(e) => update("diningTimeStart", e.target.value)}
+                    className="w-full px-3 py-2 border border-stone-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/50 bg-white"
+                  />
+                  <p className="text-xs text-stone-400 mt-1 text-center">
+                    {formatTimeDisplay(settings.diningTimeStart)} ET
+                  </p>
+                </div>
+                <span className="text-stone-400 text-sm">to</span>
+                <div className="flex-1">
+                  <input
+                    type="time"
+                    value={settings.diningTimeEnd}
+                    onChange={(e) => update("diningTimeEnd", e.target.value)}
+                    className="w-full px-3 py-2 border border-stone-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#C9A84C]/50 bg-white"
+                  />
+                  <p className="text-xs text-stone-400 mt-1 text-center">
+                    {formatTimeDisplay(settings.diningTimeEnd)} ET
+                  </p>
+                </div>
+              </div>
+              <p className="text-xs text-stone-400 mt-2">
+                Shown as context on each card — Resy's search handles the time filtering.
+              </p>
+            </div>
+          </section>
         </div>
 
         <div className="sticky bottom-0 bg-[#FAF7F2] border-t border-stone-200 p-6">
@@ -210,8 +320,30 @@ export default function SettingsPanel({ onClose, onChange }: Props) {
 }
 
 export function loadSettings(): UserSettings {
-  if (typeof window === "undefined") return DEFAULT_SETTINGS;
+  if (typeof window === "undefined") return {
+    name: "",
+    email: "",
+    gmailAppPassword: "",
+    diningDateStart: "",
+    diningDateEnd: "",
+    partySize: 2,
+    specialRequests: "",
+    preferredDays: ["wednesday", "thursday", "friday", "saturday"],
+    diningTimeStart: "18:30",
+    diningTimeEnd: "21:30",
+  };
   const stored = localStorage.getItem(STORAGE_KEY);
-  if (!stored) return DEFAULT_SETTINGS;
+  if (!stored) return {
+    name: "",
+    email: "",
+    gmailAppPassword: "",
+    diningDateStart: "",
+    diningDateEnd: "",
+    partySize: 2,
+    specialRequests: "",
+    preferredDays: ["wednesday", "thursday", "friday", "saturday"],
+    diningTimeStart: "18:30",
+    diningTimeEnd: "21:30",
+  };
   return JSON.parse(stored) as UserSettings;
 }

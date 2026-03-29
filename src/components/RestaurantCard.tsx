@@ -4,7 +4,7 @@ import { useState } from "react";
 import Image from "next/image";
 import type { Restaurant } from "@/data/restaurants";
 import type { UserSettings } from "@/lib/emailTemplates";
-import { generateEmail, getBookingDate } from "@/lib/emailTemplates";
+import { generateEmail, getBookingContext, buildResyUrl } from "@/lib/emailTemplates";
 import EmailModal from "./EmailModal";
 
 interface Props {
@@ -13,6 +13,21 @@ interface Props {
   isSent: boolean;
   onSent: (id: string) => void;
 }
+
+function formatTime(t: string): string {
+  if (!t) return "";
+  const [h, m] = t.split(":").map(Number);
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 || 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+
+const urgencyStyles = {
+  today: "bg-emerald-50 text-emerald-700 border border-emerald-200",
+  soon: "bg-amber-50 text-amber-700 border border-amber-200",
+  upcoming: "bg-stone-50 text-[#C9A84C] border border-stone-200",
+  past: "bg-stone-50 text-stone-400 border border-stone-200 line-through",
+};
 
 export default function RestaurantCard({
   restaurant,
@@ -25,28 +40,27 @@ export default function RestaurantCard({
 
   const hasEmail =
     restaurant.reservationEmail !== null || restaurant.contactEmail !== null;
-  const draft = settings.email
-    ? generateEmail(restaurant, settings)
-    : null;
+  const draft = settings.email ? generateEmail(restaurant, settings) : null;
 
-  // Calculate booking date if user has set a dining date
-  const bookingInfo =
-    settings.diningDateStart && restaurant.advanceDays
-      ? getBookingDate(settings.diningDateStart, restaurant.advanceDays)
-      : null;
+  // Always compute from today — works with or without settings.diningDateStart
+  const ctx = getBookingContext(
+    restaurant.advanceDays,
+    restaurant.bookingTime,
+    settings.diningDateStart
+  );
 
   async function downloadCalendarReminder() {
-    if (!settings.diningDateStart) {
-      alert("Please set your dining date in Settings first.");
+    if (!ctx.isActionable) {
+      alert(
+        "The booking window for this restaurant has already passed for your selected dates."
+      );
       return;
     }
 
     setCalendarLoading(true);
     try {
-      const target = new Date(settings.diningDateStart);
-      const bookingDate = new Date(target);
-      bookingDate.setDate(target.getDate() - restaurant.advanceDays);
-      const bookingDateStr = bookingDate.toISOString().split("T")[0];
+      const bookingDateStr = ctx.bookingDate.toISOString().split("T")[0];
+      const diningDateStr = ctx.targetDiningDate.toISOString().split("T")[0];
 
       const res = await fetch("/api/calendar", {
         method: "POST",
@@ -55,6 +69,7 @@ export default function RestaurantCard({
           restaurantId: restaurant.id,
           restaurantName: restaurant.name,
           bookingDate: bookingDateStr,
+          diningDate: diningDateStr,
           bookingTime: restaurant.bookingTime,
           resyUrl: restaurant.resyUrl,
           tip: restaurant.bookingTip,
@@ -84,7 +99,7 @@ export default function RestaurantCard({
       <div
         className={`relative bg-white rounded-2xl overflow-hidden shadow-sm border transition-all duration-200 hover:shadow-md ${
           isSent ? "border-emerald-200" : "border-stone-100"
-        }`}
+        } ${ctx.urgencyTier === "past" ? "opacity-60" : ""}`}
       >
         {/* Photo */}
         <div className="relative h-48 overflow-hidden">
@@ -158,36 +173,65 @@ export default function RestaurantCard({
           </div>
 
           {/* Reservation Info */}
-          <div className="bg-stone-50 rounded-xl p-3 mb-4 space-y-1.5">
-            <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest mb-2">
+          <div className="bg-stone-50 rounded-xl p-3 mb-4 space-y-2">
+            <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest">
               Reservation Info
             </p>
+
+            {/* Urgency pill */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                className={`inline-flex items-center text-xs px-2.5 py-1 rounded-full font-semibold ${
+                  urgencyStyles[ctx.urgencyTier]
+                }`}
+              >
+                {ctx.urgencyTier === "today" && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5 animate-pulse" />
+                )}
+                {ctx.urgencyLabel}
+              </span>
+              {ctx.isActionable && (
+                <span className="text-xs text-stone-400">
+                  → Dine {ctx.targetDiningDateStr}
+                </span>
+              )}
+            </div>
+
             <div className="flex items-start gap-2">
               <span className="text-stone-300 mt-0.5">◷</span>
-              <div>
-                <p className="text-xs text-stone-700">
-                  {restaurant.advanceDays > 0
-                    ? `Opens ${restaurant.advanceDays} days in advance`
-                    : "Rolling reservations"}
-                  {restaurant.bookingTime && (
-                    <> · <span className="font-medium">{restaurant.bookingTime}</span></>
-                  )}
-                </p>
-                {bookingInfo && (
-                  <p className="text-xs text-[#C9A84C] font-medium mt-0.5">
-                    Book on {bookingInfo.fullDate}
-                    {restaurant.bookingTime && ` at ${restaurant.bookingTime}`}
-                  </p>
+              <p className="text-xs text-stone-600">
+                {restaurant.advanceDays > 0
+                  ? `${restaurant.advanceDays}-day advance window`
+                  : "Rolling reservations"}
+                {restaurant.bookingTime && (
+                  <>
+                    {" "}· opens at{" "}
+                    <span className="font-medium">{restaurant.bookingTime}</span>
+                  </>
                 )}
-              </div>
+              </p>
             </div>
+
             {restaurant.walkInOption && (
               <div className="flex items-start gap-2">
                 <span className="text-stone-300 mt-0.5">↪</span>
                 <p className="text-xs text-stone-600">{restaurant.walkInOption}</p>
               </div>
             )}
-            <div className="flex items-start gap-2 pt-1">
+            {(settings.diningTimeStart || settings.diningTimeEnd) && (
+              <div className="flex items-start gap-2">
+                <span className="text-stone-300 mt-0.5">🕐</span>
+                <p className="text-xs text-stone-500">
+                  Targeting{" "}
+                  <span className="font-medium">
+                    {formatTime(settings.diningTimeStart)}
+                    {settings.diningTimeEnd && ` – ${formatTime(settings.diningTimeEnd)}`}
+                  </span>{" "}
+                  ET
+                </p>
+              </div>
+            )}
+            <div className="flex items-start gap-2">
               <span className="text-stone-300 mt-0.5">💡</span>
               <p className="text-xs text-stone-500 italic leading-relaxed">
                 {restaurant.bookingTip}
@@ -227,13 +271,17 @@ export default function RestaurantCard({
               {hasEmail ? "Send Email" : "Send Reminder"}
             </button>
 
-            {/* Calendar Button */}
+            {/* Calendar Button — works without settings, disabled if window passed */}
             {restaurant.resyUrl && (
               <button
                 onClick={downloadCalendarReminder}
-                disabled={calendarLoading}
-                title="Download calendar reminder (fires 15 min before booking opens)"
-                className="px-3 py-2.5 rounded-xl border border-stone-200 text-stone-500 hover:bg-stone-50 hover:text-stone-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={calendarLoading || !ctx.isActionable}
+                title={
+                  ctx.isActionable
+                    ? `Set booking alert for ${ctx.bookingDateStr}${restaurant.bookingTime ? ` at ${restaurant.bookingTime}` : ""}`
+                    : "Booking window has passed"
+                }
+                className="px-3 py-2.5 rounded-xl border border-stone-200 text-stone-500 hover:bg-stone-50 hover:text-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {calendarLoading ? (
                   <span className="inline-block w-4 h-4 border-2 border-stone-300 border-t-stone-600 rounded-full animate-spin" />
@@ -255,13 +303,18 @@ export default function RestaurantCard({
               </button>
             )}
 
-            {/* Resy Link */}
+            {/* Resy Link — pre-filled with nearest preferred day + party size */}
             {restaurant.resyUrl && (
               <a
-                href={restaurant.resyUrl}
+                href={buildResyUrl(
+                  restaurant.resyUrl,
+                  ctx.targetDiningDate,
+                  settings.partySize,
+                  settings.preferredDays ?? ["wednesday", "thursday", "friday", "saturday"]
+                )}
                 target="_blank"
                 rel="noopener noreferrer"
-                title="Open on Resy"
+                title={`Open on Resy — pre-filled for ${settings.partySize} guests`}
                 className="px-3 py-2.5 rounded-xl border border-stone-200 text-stone-500 hover:bg-stone-50 hover:text-stone-700 transition-colors"
               >
                 <svg
