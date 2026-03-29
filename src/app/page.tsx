@@ -7,6 +7,7 @@ import { getBookingContext } from "@/lib/emailTemplates";
 import Header from "@/components/Header";
 import RestaurantCard from "@/components/RestaurantCard";
 import SettingsPanel from "@/components/SettingsPanel";
+import ReservationMonitor from "@/components/ReservationMonitor";
 
 const SENT_KEY = "hopeyeats_sent";
 
@@ -240,6 +241,11 @@ export default function Home() {
             </svg>
             Calendar = set booking alert (15 min heads-up)
           </span>
+        </div>
+
+        {/* Reservation Monitor */}
+        <div className="mb-8">
+          <ReservationMonitor partySize={settings.partySize} />
         </div>
 
         {/* Restaurant Grid */}
