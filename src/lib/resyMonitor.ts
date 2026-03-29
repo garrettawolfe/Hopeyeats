@@ -1,8 +1,11 @@
 /**
  * Resy Reservation Monitor — detects net-new availability slots.
  *
- * Compares current availability against previously seen slots to surface
- * only genuinely new reservations (cancellations, fresh releases, etc.).
+ * Features:
+ * - Slot diffing: compares current vs previous availability per restaurant
+ * - Staggered restaurant polling: randomizes order and spreads requests
+ * - Duplicate suppression: 10-minute cooldown per slot to avoid alert spam
+ * - Polling strategy: smart intervals based on time-of-day and rate limit state
  */
 
 import type { AvailabilitySlot } from "./resyApi";
@@ -30,6 +33,35 @@ export interface MonitorSnapshot {
   checkedAt: string;
 }
 
+// ─── Duplicate Suppression ───────────────────────────────────────────────────
+
+/** Track recently-alerted slot IDs to avoid re-alerting within cooldown. */
+const recentAlerts = new Map<string, number>(); // slotId → timestamp
+const ALERT_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+
+function isRecentlyAlerted(slotId: string): boolean {
+  const alertedAt = recentAlerts.get(slotId);
+  if (!alertedAt) return false;
+  if (Date.now() - alertedAt > ALERT_COOLDOWN_MS) {
+    recentAlerts.delete(slotId);
+    return false;
+  }
+  return true;
+}
+
+function markAlerted(slotId: string): void {
+  recentAlerts.set(slotId, Date.now());
+  // Prune old entries periodically
+  if (recentAlerts.size > 5000) {
+    const cutoff = Date.now() - ALERT_COOLDOWN_MS;
+    for (const [id, ts] of recentAlerts) {
+      if (ts < cutoff) recentAlerts.delete(id);
+    }
+  }
+}
+
+// ─── Monitor State ───────────────────────────────────────────────────────────
+
 export interface MonitorState {
   snapshots: Map<string, MonitorSnapshot>;
   diffs: SlotDiff[];
@@ -38,9 +70,6 @@ export interface MonitorState {
   pollCount: number;
 }
 
-/**
- * Create a fresh monitor state.
- */
 export function createMonitorState(): MonitorState {
   return {
     snapshots: new Map(),
@@ -51,12 +80,14 @@ export function createMonitorState(): MonitorState {
   };
 }
 
+// ─── Slot Diffing ────────────────────────────────────────────────────────────
+
 /**
  * Compare current slots against the previous snapshot for a restaurant.
- * Returns the diff (new + dropped slots).
+ * Filters out recently-alerted slots to suppress duplicates.
  *
- * On the very first poll for a restaurant, all slots are considered "new"
- * (this is the baseline). Subsequent polls detect only changes.
+ * On the very first poll for a restaurant, all slots are recorded as baseline
+ * (newSlots is populated for tracking but won't trigger alerts).
  */
 export function diffSlots(
   restaurant: MonitoredRestaurant,
@@ -65,10 +96,12 @@ export function diffSlots(
 ): SlotDiff {
   const now = new Date().toISOString();
   const currentIds = new Set(currentSlots.map((s) => s.id));
-  const currentMap = new Map(currentSlots.map((s) => [s.id, s]));
 
   if (!previousSnapshot) {
-    // First poll — everything is "new" (baseline)
+    // First poll — baseline. Mark all as "seen" so they don't alert later.
+    for (const slot of currentSlots) {
+      markAlerted(slot.id);
+    }
     return {
       restaurant,
       newSlots: currentSlots,
@@ -80,8 +113,15 @@ export function diffSlots(
 
   const previousIds = previousSnapshot.slotIds;
 
-  // New = in current but not in previous
-  const newSlots = currentSlots.filter((s) => !previousIds.has(s.id));
+  // New = in current but not in previous, and not recently alerted
+  const newSlots = currentSlots.filter(
+    (s) => !previousIds.has(s.id) && !isRecentlyAlerted(s.id),
+  );
+
+  // Mark new slots as alerted
+  for (const slot of newSlots) {
+    markAlerted(slot.id);
+  }
 
   // Dropped = in previous but not in current
   const droppedSlots: AvailabilitySlot[] = [];
@@ -103,7 +143,6 @@ export function diffSlots(
 
 /**
  * Update the monitor state with fresh availability data for a restaurant.
- * Returns the diff for this restaurant.
  */
 export function updateSnapshot(
   state: MonitorState,
@@ -113,7 +152,6 @@ export function updateSnapshot(
   const previousSnapshot = state.snapshots.get(restaurant.id);
   const diff = diffSlots(restaurant, currentSlots, previousSnapshot);
 
-  // Save new snapshot
   const now = new Date().toISOString();
   state.snapshots.set(restaurant.id, {
     restaurantId: restaurant.id,
@@ -122,19 +160,52 @@ export function updateSnapshot(
     checkedAt: now,
   });
 
-  // Only record diffs that have actual changes (skip baseline)
-  if (previousSnapshot && (diff.newSlots.length > 0 || diff.droppedSlots.length > 0)) {
-    state.diffs.unshift(diff); // newest first
-    // Keep only last 100 diffs
-    if (state.diffs.length > 100) {
-      state.diffs = state.diffs.slice(0, 100);
+  // Only record diffs with actual changes (skip baseline)
+  if (
+    previousSnapshot &&
+    (diff.newSlots.length > 0 || diff.droppedSlots.length > 0)
+  ) {
+    state.diffs.unshift(diff);
+    if (state.diffs.length > 200) {
+      state.diffs = state.diffs.slice(0, 200);
     }
   }
 
   return diff;
 }
 
-// --- Serializable types for API transport ---
+// ─── Restaurant Polling Strategy ─────────────────────────────────────────────
+
+/**
+ * Shuffle an array using Fisher-Yates. Returns a new array.
+ * Used to randomize restaurant polling order each cycle.
+ */
+export function shuffleArray<T>(arr: T[]): T[] {
+  const result = [...arr];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
+/**
+ * Split restaurants into batches for staggered polling.
+ * This spreads requests over time instead of hitting all venues at once.
+ */
+export function batchRestaurants(
+  restaurants: MonitoredRestaurant[],
+  batchSize: number = 3,
+): MonitoredRestaurant[][] {
+  const shuffled = shuffleArray(restaurants);
+  const batches: MonitoredRestaurant[][] = [];
+  for (let i = 0; i < shuffled.length; i += batchSize) {
+    batches.push(shuffled.slice(i, i + batchSize));
+  }
+  return batches;
+}
+
+// ─── Serializable types for API transport ────────────────────────────────────
 
 export interface SerializableSlotDiff {
   restaurant: MonitoredRestaurant;
@@ -148,29 +219,45 @@ export interface MonitorPollResult {
   diffs: SerializableSlotDiff[];
   pollCount: number;
   lastPollAt: string;
-  isBaseline: boolean; // true if this was the first poll for any restaurant
+  isBaseline: boolean;
   summary: string;
+  rateLimitStats?: {
+    totalRequests: number;
+    total429s: number;
+    isBackedOff: boolean;
+    backoffRemaining: number;
+  };
 }
 
 /**
  * Format a human-readable summary of a poll result.
  */
-export function formatPollSummary(diffs: SlotDiff[], isBaseline: boolean): string {
+export function formatPollSummary(
+  diffs: SlotDiff[],
+  isBaseline: boolean,
+): string {
   if (isBaseline) {
     const totalSlots = diffs.reduce((sum, d) => sum + d.totalAvailable, 0);
     const restaurants = diffs.filter((d) => d.totalAvailable > 0).length;
-    return `Baseline scan complete: ${totalSlots} slots across ${restaurants} restaurants.`;
+    return `Baseline scan: ${totalSlots} slots across ${restaurants} restaurants.`;
   }
 
   const newTotal = diffs.reduce((sum, d) => sum + d.newSlots.length, 0);
-  const droppedTotal = diffs.reduce((sum, d) => sum + d.droppedSlots.length, 0);
+  const droppedTotal = diffs.reduce(
+    (sum, d) => sum + d.droppedSlots.length,
+    0,
+  );
 
   if (newTotal === 0 && droppedTotal === 0) {
     return "No changes detected.";
   }
 
   const parts: string[] = [];
-  if (newTotal > 0) parts.push(`${newTotal} new slot${newTotal !== 1 ? "s" : ""} found`);
-  if (droppedTotal > 0) parts.push(`${droppedTotal} slot${droppedTotal !== 1 ? "s" : ""} taken`);
+  if (newTotal > 0)
+    parts.push(`${newTotal} new slot${newTotal !== 1 ? "s" : ""} found`);
+  if (droppedTotal > 0)
+    parts.push(
+      `${droppedTotal} slot${droppedTotal !== 1 ? "s" : ""} taken`,
+    );
   return parts.join(", ") + ".";
 }

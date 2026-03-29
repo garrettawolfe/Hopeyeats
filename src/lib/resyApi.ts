@@ -1,14 +1,109 @@
 /**
  * Resy API client for checking reservation availability.
  *
- * Uses the unofficial Resy API at api.resy.com.
- * The public API key "youarewhereyoueat" is embedded in the Resy web app
- * and is required for all requests. No user auth token is needed for
- * read-only availability checks.
+ * Uses the unofficial Resy API at api.resy.com with anti-detection measures:
+ * - Randomized request delays with jitter
+ * - Rotating User-Agent strings
+ * - Exponential backoff on rate limits (429)
+ * - Request fingerprint randomization
+ * - Sleep window awareness (reduced polling overnight)
+ * - Per-request header variation
  */
 
 const RESY_API_BASE = "https://api.resy.com";
-const RESY_API_KEY = "youarewhereyoueat";
+
+// The production API key embedded in Resy's frontend JS bundle.
+// Two known keys — VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5 is the more current one.
+const RESY_API_KEY = "VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5";
+
+// ─── Anti-Detection: User-Agent Rotation ─────────────────────────────────────
+
+const USER_AGENTS = [
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0",
+];
+
+function randomUserAgent(): string {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+// ─── Anti-Detection: Randomized Delays ───────────────────────────────────────
+
+/** Random delay between min and max milliseconds (uniform distribution). */
+function randomDelay(minMs: number, maxMs: number): Promise<void> {
+  const delay = minMs + Math.random() * (maxMs - minMs);
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+/** Add gaussian-like jitter to a base delay. Returns ms. */
+function jitteredDelay(baseMs: number, jitterPercent: number = 0.3): number {
+  const jitter = baseMs * jitterPercent;
+  // Box-Muller approximation: sum of randoms approaches normal
+  const r = (Math.random() + Math.random() + Math.random()) / 3;
+  return Math.max(100, baseMs + (r - 0.5) * 2 * jitter);
+}
+
+// ─── Anti-Detection: Rate Limit Tracking ─────────────────────────────────────
+
+interface RateLimitState {
+  consecutiveErrors: number;
+  backoffUntil: number; // timestamp ms
+  totalRequests: number;
+  total429s: number;
+  lastRequestAt: number;
+}
+
+const rateLimitState: RateLimitState = {
+  consecutiveErrors: 0,
+  backoffUntil: 0,
+  totalRequests: 0,
+  total429s: 0,
+  lastRequestAt: 0,
+};
+
+/** Check if we're currently in a backoff period. */
+function isBackedOff(): boolean {
+  return Date.now() < rateLimitState.backoffUntil;
+}
+
+/** Calculate exponential backoff delay after a 429. */
+function calculateBackoff(): number {
+  const base = 60_000; // 60 seconds base
+  const exp = Math.min(rateLimitState.consecutiveErrors, 5);
+  const delay = base * Math.pow(2, exp);
+  // Add 0-30% jitter
+  return delay + Math.random() * delay * 0.3;
+}
+
+/** Get current rate limit stats for monitoring UI. */
+export function getRateLimitStats() {
+  return {
+    ...rateLimitState,
+    isBackedOff: isBackedOff(),
+    backoffRemaining: Math.max(0, rateLimitState.backoffUntil - Date.now()),
+  };
+}
+
+// ─── Anti-Detection: Request Fingerprint Variation ───────────────────────────
+
+/** Slightly vary lat/long to avoid identical request fingerprints. */
+function randomizedCoords(): { lat: string; long: string } {
+  // NYC area: ~40.71 to 40.78, ~-74.01 to -73.93
+  const lat = 40.71 + Math.random() * 0.07;
+  const long = -74.01 + Math.random() * 0.08;
+  return {
+    lat: lat.toFixed(4),
+    long: long.toFixed(4),
+  };
+}
+
+// ─── Core Types ──────────────────────────────────────────────────────────────
 
 export interface ResySlot {
   date: {
@@ -46,18 +141,6 @@ export interface ResyFindResponse {
   };
 }
 
-export interface ResyVenueSearchResult {
-  id: {
-    resy: number;
-  };
-  name: string;
-  location: {
-    neighborhood: string;
-    city: string;
-  };
-  url_slug: string;
-}
-
 export interface AvailabilitySlot {
   id: string; // unique key: venueId-date-time-type
   venueId: number;
@@ -72,47 +155,148 @@ export interface AvailabilitySlot {
   resyUrl: string;
 }
 
+// ─── Headers ─────────────────────────────────────────────────────────────────
+
 function buildHeaders(): Record<string, string> {
-  return {
+  const headers: Record<string, string> = {
     Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
-    "Content-Type": "application/json",
+    Accept: "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
     Origin: "https://resy.com",
     Referer: "https://resy.com/",
+    "User-Agent": randomUserAgent(),
   };
+
+  // Randomly include optional headers to vary fingerprint
+  if (Math.random() > 0.5) {
+    headers["Accept-Encoding"] = "gzip, deflate, br";
+  }
+  if (Math.random() > 0.7) {
+    headers["Sec-Fetch-Dest"] = "empty";
+    headers["Sec-Fetch-Mode"] = "cors";
+    headers["Sec-Fetch-Site"] = "same-site";
+  }
+
+  return headers;
 }
+
+// ─── API Methods ─────────────────────────────────────────────────────────────
 
 /**
  * Fetch available reservation slots for a venue on a given date.
+ * Includes rate limit handling and exponential backoff.
  */
 export async function findAvailability(
   venueId: number,
-  date: string, // YYYY-MM-DD
+  date: string,
   partySize: number = 2,
 ): Promise<ResyFindResponse | null> {
+  // Respect backoff period
+  if (isBackedOff()) {
+    const waitMs = rateLimitState.backoffUntil - Date.now();
+    console.warn(
+      `[Resy] Rate limited — waiting ${Math.round(waitMs / 1000)}s before retry`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+
+  // Enforce minimum gap between requests (800-2000ms randomized)
+  const timeSinceLast = Date.now() - rateLimitState.lastRequestAt;
+  const minGap = 800 + Math.random() * 1200;
+  if (timeSinceLast < minGap) {
+    await new Promise((resolve) =>
+      setTimeout(resolve, minGap - timeSinceLast),
+    );
+  }
+
+  const coords = randomizedCoords();
   const params = new URLSearchParams({
     venue_id: venueId.toString(),
     day: date,
     party_size: partySize.toString(),
-    lat: "40.7128",
-    long: "-73.9060",
+    lat: coords.lat,
+    long: coords.long,
   });
 
   const url = `${RESY_API_BASE}/4/find?${params}`;
+  rateLimitState.lastRequestAt = Date.now();
+  rateLimitState.totalRequests++;
 
   const response = await fetch(url, {
     method: "GET",
     headers: buildHeaders(),
   });
 
-  if (!response.ok) {
-    console.error(
-      `Resy API error for venue ${venueId}: ${response.status} ${response.statusText}`,
+  // Handle rate limiting with exponential backoff
+  if (response.status === 429) {
+    rateLimitState.total429s++;
+    rateLimitState.consecutiveErrors++;
+    const backoff = calculateBackoff();
+    rateLimitState.backoffUntil = Date.now() + backoff;
+    console.warn(
+      `[Resy] 429 Rate Limited (attempt ${rateLimitState.consecutiveErrors}) — backing off ${Math.round(backoff / 1000)}s`,
     );
     return null;
   }
 
+  // Handle other errors
+  if (!response.ok) {
+    rateLimitState.consecutiveErrors++;
+    console.error(
+      `[Resy] API error for venue ${venueId}: ${response.status} ${response.statusText}`,
+    );
+    // Brief backoff on server errors
+    if (response.status >= 500) {
+      await randomDelay(2000, 5000);
+    }
+    return null;
+  }
+
+  // Success — reset consecutive error count
+  rateLimitState.consecutiveErrors = 0;
+
   return response.json();
 }
+
+/**
+ * Resolve a venue URL slug to a numeric venue ID via the Resy API.
+ * e.g., "don-angie" → 1505
+ */
+export async function resolveVenueId(
+  urlSlug: string,
+): Promise<number | null> {
+  if (isBackedOff()) {
+    await new Promise((resolve) =>
+      setTimeout(resolve, rateLimitState.backoffUntil - Date.now()),
+    );
+  }
+
+  const params = new URLSearchParams({
+    url_slug: urlSlug,
+    location_id: "1", // NYC
+  });
+
+  const url = `${RESY_API_BASE}/3/venue?${params}`;
+  rateLimitState.lastRequestAt = Date.now();
+  rateLimitState.totalRequests++;
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: buildHeaders(),
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    return data?.id?.resy ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Slot Parsing ────────────────────────────────────────────────────────────
 
 /**
  * Parse raw Resy API response into normalized AvailabilitySlot objects.
@@ -151,9 +335,11 @@ export function parseSlots(
   });
 }
 
+// ─── Venue Availability Check ────────────────────────────────────────────────
+
 /**
  * Check availability for a venue across a range of future dates.
- * Returns all found slots.
+ * Uses randomized delays between requests to avoid detection.
  */
 export async function checkVenueAvailability(
   venueId: number,
@@ -164,8 +350,18 @@ export async function checkVenueAvailability(
 ): Promise<AvailabilitySlot[]> {
   const allSlots: AvailabilitySlot[] = [];
 
-  // Query each date sequentially to avoid rate limiting
-  for (const date of dates) {
+  // Shuffle date order to avoid predictable sequential patterns
+  const shuffledDates = [...dates].sort(() => Math.random() - 0.5);
+
+  for (const date of shuffledDates) {
+    // Check if we should abort due to heavy rate limiting
+    if (rateLimitState.consecutiveErrors >= 3) {
+      console.warn(
+        `[Resy] Too many consecutive errors for ${venueName} — aborting remaining dates`,
+      );
+      break;
+    }
+
     try {
       const response = await findAvailability(venueId, date, partySize);
       if (response) {
@@ -174,17 +370,21 @@ export async function checkVenueAvailability(
       }
     } catch (err) {
       console.error(
-        `Error checking ${venueName} on ${date}:`,
+        `[Resy] Error checking ${venueName} on ${date}:`,
         err instanceof Error ? err.message : err,
       );
     }
 
-    // Small delay between requests to be respectful
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Randomized delay between date queries (1-3s with jitter)
+    await new Promise((resolve) =>
+      setTimeout(resolve, jitteredDelay(1500, 0.4)),
+    );
   }
 
   return allSlots;
 }
+
+// ─── Date Helpers ────────────────────────────────────────────────────────────
 
 /**
  * Generate an array of date strings (YYYY-MM-DD) from today forward.
@@ -200,4 +400,31 @@ export function getForwardDates(daysAhead: number): string[] {
   }
 
   return dates;
+}
+
+/**
+ * Check if current time is in the "quiet hours" window (2-7 AM ET).
+ * During quiet hours, polling should be reduced or paused.
+ */
+export function isQuietHours(): boolean {
+  const now = new Date();
+  // Convert to ET (approximate — doesn't handle DST perfectly)
+  const etHour = (now.getUTCHours() - 5 + 24) % 24;
+  return etHour >= 2 && etHour < 7;
+}
+
+/**
+ * Get recommended poll interval based on time of day.
+ * Higher frequency during peak booking hours, lower overnight.
+ */
+export function getRecommendedInterval(): number {
+  const now = new Date();
+  const etHour = (now.getUTCHours() - 5 + 24) % 24;
+
+  // Peak booking hours: 8-10 AM ET (when most restaurants release)
+  if (etHour >= 8 && etHour < 10) return 30;
+  // Active hours: 10 AM - midnight ET
+  if (etHour >= 10 || etHour < 1) return 60;
+  // Quiet hours: 1-8 AM ET
+  return 300;
 }

@@ -3,30 +3,45 @@ import { restaurants } from "@/data/restaurants";
 import {
   checkVenueAvailability,
   getForwardDates,
+  resolveVenueId,
+  getRateLimitStats,
+  isQuietHours,
+  getRecommendedInterval,
 } from "@/lib/resyApi";
 import {
   createMonitorState,
   updateSnapshot,
   formatPollSummary,
+  batchRestaurants,
   type MonitorState,
   type MonitoredRestaurant,
   type MonitorPollResult,
   type SerializableSlotDiff,
 } from "@/lib/resyMonitor";
 
-// In-memory monitor state (persists across requests while the server is running)
+// In-memory monitor state (persists across requests while the server runs)
 let monitorState: MonitorState = createMonitorState();
+
+// Cache resolved venue IDs so we don't re-resolve every poll
+const venueIdCache = new Map<string, number>();
+
+/** Small random delay between batches (2-5s). */
+function batchDelay(): Promise<void> {
+  const ms = 2000 + Math.random() * 3000;
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * POST /api/resy-monitor
  *
- * Poll all monitored restaurants for availability changes.
+ * Poll selected restaurants for availability changes.
  *
  * Body: {
  *   restaurantIds?: string[]  — which restaurants to check (default: all with venueId)
  *   partySize?: number        — party size filter (default: 2)
- *   daysAhead?: number        — how many days forward to scan (default: uses restaurant's advanceDays)
+ *   daysAhead?: number        — how many days forward to scan (overrides per-restaurant advanceDays)
  *   reset?: boolean           — reset monitor state (clear baseline)
+ *   resolveIds?: boolean      — attempt to resolve missing venue IDs via Resy API
  * }
  */
 export async function POST(request: Request) {
@@ -37,25 +52,60 @@ export async function POST(request: Request) {
       partySize = 2,
       daysAhead,
       reset = false,
+      resolveIds = false,
     } = body as {
       restaurantIds?: string[];
       partySize?: number;
       daysAhead?: number;
       reset?: boolean;
+      resolveIds?: boolean;
     };
 
     if (reset) {
       monitorState = createMonitorState();
+      venueIdCache.clear();
       return NextResponse.json({ message: "Monitor state reset.", pollCount: 0 });
     }
 
-    // Determine which restaurants to monitor
-    const monitorable = restaurants.filter(
-      (r) =>
-        r.resyVenueId !== null &&
-        r.resyUrl !== null &&
-        (r.reservationMethod === "resy" || r.reservationMethod === "both"),
-    );
+    // ── Resolve missing venue IDs if requested ──────────────────────────
+    if (resolveIds) {
+      const needsResolution = restaurants.filter(
+        (r) =>
+          r.resyVenueId === null &&
+          r.resyUrl !== null &&
+          !venueIdCache.has(r.id),
+      );
+
+      for (const r of needsResolution) {
+        const slug = r.resyUrl!.split("/venues/")[1];
+        if (!slug) continue;
+
+        const venueId = await resolveVenueId(slug);
+        if (venueId) {
+          venueIdCache.set(r.id, venueId);
+          console.log(`[Monitor] Resolved ${r.name} → venue ID ${venueId}`);
+        }
+
+        // Delay between resolution requests
+        await new Promise((resolve) =>
+          setTimeout(resolve, 1000 + Math.random() * 2000),
+        );
+      }
+    }
+
+    // ── Determine monitorable restaurants ────────────────────────────────
+    const monitorable = restaurants
+      .filter(
+        (r) =>
+          r.resyUrl !== null &&
+          (r.reservationMethod === "resy" || r.reservationMethod === "both"),
+      )
+      .map((r) => ({
+        ...r,
+        // Use cached venue ID if the static one is null
+        effectiveVenueId: r.resyVenueId ?? venueIdCache.get(r.id) ?? null,
+      }))
+      .filter((r) => r.effectiveVenueId !== null);
 
     const targets = restaurantIds
       ? monitorable.filter((r) => restaurantIds.includes(r.id))
@@ -63,42 +113,64 @@ export async function POST(request: Request) {
 
     if (targets.length === 0) {
       return NextResponse.json(
-        { error: "No monitorable restaurants found. Ensure restaurants have a resyVenueId." },
+        {
+          error:
+            "No monitorable restaurants found. Try enabling 'Resolve IDs' to discover venue IDs.",
+          monitorableCount: 0,
+        },
         { status: 400 },
       );
     }
 
+    // ── Check quiet hours ────────────────────────────────────────────────
+    const quiet = isQuietHours();
+
+    // ── Build monitored restaurant list ──────────────────────────────────
+    const monitored: MonitoredRestaurant[] = targets.map((r) => ({
+      id: r.id,
+      name: r.name,
+      resyVenueId: r.effectiveVenueId!,
+      resyUrl: r.resyUrl!,
+      advanceDays: r.advanceDays,
+    }));
+
+    // ── Staggered polling: batch restaurants ─────────────────────────────
+    const batches = batchRestaurants(monitored, quiet ? 2 : 3);
     const isBaseline = monitorState.pollCount === 0;
     const diffs: SerializableSlotDiff[] = [];
 
-    for (const restaurant of targets) {
-      const monitored: MonitoredRestaurant = {
-        id: restaurant.id,
-        name: restaurant.name,
-        resyVenueId: restaurant.resyVenueId!,
-        resyUrl: restaurant.resyUrl!,
-        advanceDays: restaurant.advanceDays,
-      };
+    for (const batch of batches) {
+      // Process each restaurant in the batch
+      for (const restaurant of batch) {
+        const lookAhead = daysAhead ?? Math.min(restaurant.advanceDays, 30);
+        // During quiet hours, only check the next 7 days (cancellation window)
+        const effectiveLookAhead = quiet
+          ? Math.min(lookAhead, 7)
+          : lookAhead;
+        const dates = getForwardDates(effectiveLookAhead);
 
-      const lookAhead = daysAhead ?? restaurant.advanceDays;
-      const dates = getForwardDates(Math.min(lookAhead, 30)); // cap at 30 days
+        const slots = await checkVenueAvailability(
+          restaurant.resyVenueId,
+          restaurant.name,
+          restaurant.resyUrl,
+          dates,
+          partySize,
+        );
 
-      const slots = await checkVenueAvailability(
-        monitored.resyVenueId,
-        monitored.name,
-        monitored.resyUrl,
-        dates,
-        partySize,
-      );
+        const diff = updateSnapshot(monitorState, restaurant, slots);
+        diffs.push({
+          restaurant: diff.restaurant,
+          newSlots: diff.newSlots,
+          droppedSlots: diff.droppedSlots,
+          totalAvailable: diff.totalAvailable,
+          checkedAt: diff.checkedAt,
+        });
+      }
 
-      const diff = updateSnapshot(monitorState, monitored, slots);
-      diffs.push({
-        restaurant: diff.restaurant,
-        newSlots: diff.newSlots,
-        droppedSlots: diff.droppedSlots,
-        totalAvailable: diff.totalAvailable,
-        checkedAt: diff.checkedAt,
-      });
+      // Random delay between batches
+      if (batches.indexOf(batch) < batches.length - 1) {
+        await batchDelay();
+      }
     }
 
     monitorState.pollCount++;
@@ -110,11 +182,12 @@ export async function POST(request: Request) {
       lastPollAt: monitorState.lastPollAt,
       isBaseline,
       summary: formatPollSummary(diffs, isBaseline),
+      rateLimitStats: getRateLimitStats(),
     };
 
     return NextResponse.json(result);
   } catch (err) {
-    console.error("Monitor poll error:", err);
+    console.error("[Monitor] Poll error:", err);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Unknown error" },
       { status: 500 },
@@ -125,10 +198,10 @@ export async function POST(request: Request) {
 /**
  * GET /api/resy-monitor
  *
- * Return current monitor status and recent diffs.
+ * Return current monitor status, recent diffs, and rate limit info.
  */
 export async function GET() {
-  const recentDiffs = monitorState.diffs.slice(0, 20).map((d) => ({
+  const recentDiffs = monitorState.diffs.slice(0, 30).map((d) => ({
     restaurant: d.restaurant,
     newSlots: d.newSlots,
     droppedSlots: d.droppedSlots,
@@ -136,7 +209,6 @@ export async function GET() {
     checkedAt: d.checkedAt,
   }));
 
-  // Build per-restaurant summary from snapshots
   const restaurantStatus = Array.from(monitorState.snapshots.entries()).map(
     ([id, snap]) => ({
       restaurantId: id,
@@ -151,5 +223,8 @@ export async function GET() {
     lastPollAt: monitorState.lastPollAt,
     restaurantStatus,
     recentDiffs,
+    rateLimitStats: getRateLimitStats(),
+    recommendedInterval: getRecommendedInterval(),
+    isQuietHours: isQuietHours(),
   });
 }
