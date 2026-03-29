@@ -75,19 +75,51 @@ export async function resyLogin(
   password: string,
 ): Promise<ResyAuthTokens | { error: string } | null> {
   try {
-    const body = new URLSearchParams({ email, password });
-
-    const response = await fetch(`${RESY_API_BASE}/3/auth/password`, {
+    // Try JSON body first (Resy's current API format)
+    let response = await fetch(`${RESY_API_BASE}/3/auth/password`, {
       method: "POST",
       headers: {
         Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
-        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Type": "application/json",
         Accept: "application/json",
         Origin: "https://resy.com",
         Referer: "https://resy.com/",
       },
-      body: body.toString(),
+      body: JSON.stringify({ email, password }),
     });
+
+    // If JSON fails with 500, try form-urlencoded as fallback
+    if (response.status === 500) {
+      console.log("[ResyAuth] JSON body returned 500, trying form-urlencoded...");
+      const formBody = new URLSearchParams({ email, password });
+      response = await fetch(`${RESY_API_BASE}/3/auth/password`, {
+        method: "POST",
+        headers: {
+          Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json",
+          Origin: "https://resy.com",
+          Referer: "https://resy.com/",
+        },
+        body: formBody.toString(),
+      });
+    }
+
+    // If still 500, try the legacy API key
+    if (response.status === 500) {
+      console.log("[ResyAuth] Trying legacy API key...");
+      response = await fetch(`${RESY_API_BASE}/3/auth/password`, {
+        method: "POST",
+        headers: {
+          Authorization: 'ResyAPI api_key="youarewhereyoueat"',
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json",
+          Origin: "https://resy.com",
+          Referer: "https://resy.com/",
+        },
+        body: new URLSearchParams({ email, password }).toString(),
+      });
+    }
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
