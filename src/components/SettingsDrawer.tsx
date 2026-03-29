@@ -53,7 +53,7 @@ interface Props {
   settings: AppSettings;
   onSettingsChange: (s: AppSettings) => void;
   resyAuth: { authenticated: boolean; firstName?: string; lastName?: string } | null;
-  onResyLogin: (email: string, password: string) => Promise<boolean>;
+  onResyLogin: (email: string, password: string) => Promise<true | string>;
   onResyLogout: () => void;
 }
 
@@ -111,8 +111,12 @@ export default function SettingsDrawer({
   const handleLogin = async () => {
     setLoginLoading(true);
     setLoginError(null);
-    const ok = await onResyLogin(local.resyEmail, local.resyPassword);
-    if (!ok) setLoginError("Login failed — check your credentials");
+    const result = await onResyLogin(local.resyEmail, local.resyPassword);
+    if (typeof result === "string") {
+      setLoginError(result);
+    } else if (!result) {
+      setLoginError("Login failed — check your credentials");
+    }
     setLoginLoading(false);
   };
 

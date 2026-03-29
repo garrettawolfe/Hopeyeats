@@ -290,7 +290,7 @@ export default function Home() {
   };
 
   // Resy auth handlers
-  const handleResyLogin = async (email: string, password: string): Promise<boolean> => {
+  const handleResyLogin = async (email: string, password: string): Promise<true | string> => {
     try {
       const res = await fetch("/api/resy-auth", {
         method: "POST",
@@ -302,9 +302,9 @@ export default function Home() {
         setResyAuth(data);
         return true;
       }
-      return false;
-    } catch {
-      return false;
+      return data.error || "Login failed";
+    } catch (err) {
+      return err instanceof Error ? err.message : "Network error";
     }
   };
 

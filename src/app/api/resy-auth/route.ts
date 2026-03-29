@@ -24,7 +24,14 @@ export async function POST(request: Request) {
     const auth = await resyLogin(email, password);
     if (!auth) {
       return NextResponse.json(
-        { error: "Login failed — check your Resy email and password" },
+        { error: "Login failed — could not connect to Resy" },
+        { status: 401 },
+      );
+    }
+
+    if ("error" in auth) {
+      return NextResponse.json(
+        { error: auth.error },
         { status: 401 },
       );
     }

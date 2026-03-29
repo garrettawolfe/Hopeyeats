@@ -73,7 +73,7 @@ function buildAuthHeaders(authToken: string): Record<string, string> {
 export async function resyLogin(
   email: string,
   password: string,
-): Promise<ResyAuthTokens | null> {
+): Promise<ResyAuthTokens | { error: string } | null> {
   try {
     const body = new URLSearchParams({ email, password });
 
@@ -92,21 +92,32 @@ export async function resyLogin(
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       console.error(`[ResyAuth] Login failed: ${response.status} — ${text}`);
-      return null;
+      return { error: `Resy returned ${response.status}: ${text.slice(0, 200)}` };
     }
 
     const data = await response.json();
-    const authToken = data.token;
+    console.log("[ResyAuth] Response keys:", Object.keys(data));
+
+    // The token field varies between API versions
+    const authToken = data.token ?? data.auth_token ?? data.Token;
+
+    if (!authToken) {
+      console.error("[ResyAuth] No auth token in response. Keys:", Object.keys(data));
+      return null;
+    }
+
+    // Payment method ID can be in several places
     const paymentMethods = data.payment_method_id
-      ? data.payment_method_id
-      : data.payment_methods?.[0]?.id ?? null;
+      ?? data.payment_methods?.[0]?.id
+      ?? data.PaymentMethodId
+      ?? null;
 
     const result: ResyAuthTokens = {
       authToken,
       paymentMethodId: paymentMethods,
-      firstName: data.first_name ?? "",
-      lastName: data.last_name ?? "",
-      email: data.em_address ?? email,
+      firstName: data.first_name ?? data.FirstName ?? "",
+      lastName: data.last_name ?? data.LastName ?? "",
+      email: data.em_address ?? data.email ?? email,
     };
 
     cachedAuth = result;
