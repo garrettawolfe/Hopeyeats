@@ -147,18 +147,15 @@ export default function Home() {
       setLastPollTime(now);
       setPollCount((c) => c + 1);
 
-      // Update per-restaurant slot maps
-      const nextSlots = new Map(allSlots);
+      // Update per-restaurant slot maps with FULL current availability
+      const nextSlots = new Map<string, AvailabilitySlot[]>();
       const nextNewIds = new Set<string>();
 
       for (const diff of result.diffs) {
-        nextSlots.set(diff.restaurant.id, diff.newSlots.length > 0
-          ? [...(nextSlots.get(diff.restaurant.id) || []), ...diff.newSlots]
-          : (diff.totalAvailable > 0 ? nextSlots.get(diff.restaurant.id) || [] : [])
-        );
+        // Use currentSlots (all available slots), not just newSlots (changes)
+        nextSlots.set(diff.restaurant.id, diff.currentSlots ?? []);
 
-        // Track all current slots for this restaurant
-        // We need to rebuild from what the API tells us
+        // Track genuinely new slots for highlighting
         if (diff.newSlots.length > 0 && !result.isBaseline) {
           for (const slot of diff.newSlots) {
             nextNewIds.add(slot.id);

@@ -175,6 +175,7 @@ export async function POST(request: Request) {
         const diff = updateSnapshot(monitorState, restaurant, slots);
         diffs.push({
           restaurant: diff.restaurant,
+          currentSlots: slots, // ALL currently available slots
           newSlots: diff.newSlots,
           droppedSlots: diff.droppedSlots,
           totalAvailable: diff.totalAvailable,

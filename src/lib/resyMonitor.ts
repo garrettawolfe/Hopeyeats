@@ -209,6 +209,7 @@ export function batchRestaurants(
 
 export interface SerializableSlotDiff {
   restaurant: MonitoredRestaurant;
+  currentSlots: AvailabilitySlot[]; // ALL currently available slots
   newSlots: AvailabilitySlot[];
   droppedSlots: AvailabilitySlot[];
   totalAvailable: number;
