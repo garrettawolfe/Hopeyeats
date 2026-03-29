@@ -335,11 +335,97 @@ export function parseSlots(
   });
 }
 
+// ─── Calendar Endpoint (Two-Phase Optimization) ─────────────────────────────
+
+interface CalendarDay {
+  date: string;
+  inventory: {
+    reservation?: string; // "available" | "sold-out" | null
+  };
+}
+
+interface CalendarResponse {
+  scheduled?: CalendarDay[];
+  last_calendar_day?: string;
+}
+
+/**
+ * Fetch the venue calendar to discover which dates have availability.
+ * Uses the /4/venue/calendar endpoint (undocumented but used by Resy web app).
+ * Returns only dates with available inventory, drastically reducing /4/find calls.
+ */
+async function fetchVenueCalendar(
+  venueId: number,
+  startDate: string,
+  endDate: string,
+  partySize: number,
+): Promise<string[]> {
+  if (isBackedOff()) {
+    const waitMs = rateLimitState.backoffUntil - Date.now();
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+
+  const timeSinceLast = Date.now() - rateLimitState.lastRequestAt;
+  const minGap = 800 + Math.random() * 1200;
+  if (timeSinceLast < minGap) {
+    await new Promise((resolve) =>
+      setTimeout(resolve, minGap - timeSinceLast),
+    );
+  }
+
+  const params = new URLSearchParams({
+    venue_id: venueId.toString(),
+    num_seats: partySize.toString(),
+    start_date: startDate,
+    end_date: endDate,
+  });
+
+  const url = `${RESY_API_BASE}/4/venue/calendar?${params}`;
+  rateLimitState.lastRequestAt = Date.now();
+  rateLimitState.totalRequests++;
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: buildHeaders(),
+    });
+
+    if (response.status === 429) {
+      rateLimitState.total429s++;
+      rateLimitState.consecutiveErrors++;
+      const backoff = calculateBackoff();
+      rateLimitState.backoffUntil = Date.now() + backoff;
+      return [];
+    }
+
+    if (!response.ok) {
+      // Calendar endpoint may not exist for all venues — fall back gracefully
+      return [];
+    }
+
+    rateLimitState.consecutiveErrors = 0;
+    const data: CalendarResponse = await response.json();
+    const scheduled = data.scheduled ?? [];
+
+    // Return only dates with available inventory
+    return scheduled
+      .filter((day) => day.inventory?.reservation === "available")
+      .map((day) => day.date);
+  } catch {
+    return [];
+  }
+}
+
 // ─── Venue Availability Check ────────────────────────────────────────────────
 
 /**
  * Check availability for a venue across a range of future dates.
- * Uses randomized delays between requests to avoid detection.
+ *
+ * Two-phase approach (inspired by korbinschulz/resybot-open):
+ * 1. Hit /4/venue/calendar to get which dates have inventory (1 API call)
+ * 2. Hit /4/find only on dates with availability (N calls, where N << total dates)
+ *
+ * Falls back to checking all dates if the calendar endpoint fails.
  */
 export async function checkVenueAvailability(
   venueId: number,
@@ -348,13 +434,38 @@ export async function checkVenueAvailability(
   dates: string[],
   partySize: number = 2,
 ): Promise<AvailabilitySlot[]> {
-  const allSlots: AvailabilitySlot[] = [];
+  if (dates.length === 0) return [];
 
-  // Shuffle date order to avoid predictable sequential patterns
-  const shuffledDates = [...dates].sort(() => Math.random() - 0.5);
+  const allSlots: AvailabilitySlot[] = [];
+  const startDate = dates[0];
+  const endDate = dates[dates.length - 1];
+
+  // Phase 1: Calendar check (single request to find which dates have inventory)
+  let datesToCheck: string[];
+  const calendarDates = await fetchVenueCalendar(
+    venueId,
+    startDate,
+    endDate,
+    partySize,
+  );
+
+  if (calendarDates.length > 0) {
+    // Calendar worked — only check dates with availability
+    datesToCheck = calendarDates;
+    console.log(
+      `[Resy] ${venueName}: calendar found ${calendarDates.length}/${dates.length} dates with inventory`,
+    );
+  } else {
+    // Calendar failed or returned empty — fall back to checking all dates
+    // but cap at 10 to avoid excessive requests
+    datesToCheck = dates.slice(0, Math.min(dates.length, 10));
+  }
+
+  // Phase 2: Get detailed slots for available dates
+  // Shuffle to avoid predictable sequential patterns
+  const shuffledDates = [...datesToCheck].sort(() => Math.random() - 0.5);
 
   for (const date of shuffledDates) {
-    // Check if we should abort due to heavy rate limiting
     if (rateLimitState.consecutiveErrors >= 3) {
       console.warn(
         `[Resy] Too many consecutive errors for ${venueName} — aborting remaining dates`,
