@@ -173,6 +173,7 @@ export default function SettingsDrawer({
   const [tokenInput, setTokenInput] = useState(settings.resyAuthToken || "");
   const [newProfileName, setNewProfileName] = useState("");
   const [showNewProfile, setShowNewProfile] = useState(false);
+  const [bookmarkletCopied, setBookmarkletCopied] = useState(false);
 
   useEffect(() => {
     setLocal(settings);
@@ -354,19 +355,26 @@ export default function SettingsDrawer({
                     </button>
                     <div className="bg-stone-50 rounded-xl p-3 space-y-2">
                       <p className="text-[11px] font-medium text-charcoal">Get your token:</p>
-                      <div className="flex items-center gap-2">
-                        <a
-                          href={BOOKMARKLET_CODE}
-                          onClick={(e) => e.preventDefault()}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-charcoal text-white rounded-lg text-xs font-medium cursor-grab active:cursor-grabbing"
-                          title="Drag this to your bookmarks bar"
+                      <div className="space-y-2">
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(BOOKMARKLET_CODE).then(() => {
+                              setBookmarkletCopied(true);
+                              setTimeout(() => setBookmarkletCopied(false), 3000);
+                            });
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-charcoal text-white rounded-lg text-xs font-medium hover:bg-charcoal/80 transition-colors"
                         >
                           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
                           </svg>
-                          Get Resy Token
-                        </a>
-                        <span className="text-[10px] text-stone-400">Drag to bookmarks bar</span>
+                          {bookmarkletCopied ? "Copied!" : "Copy Bookmarklet Code"}
+                        </button>
+                        <p className="text-[10px] text-stone-500">
+                          {bookmarkletCopied
+                            ? "Now create a new bookmark, paste this as the URL, then click it on resy.com"
+                            : "Copy, then create a new bookmark and paste as the URL. Click it on resy.com while logged in."}
+                        </p>
                       </div>
                       <div className="border-t border-stone-200 pt-2 mt-2">
                         <p className="text-[11px] font-medium text-charcoal mb-1">Or manually:</p>

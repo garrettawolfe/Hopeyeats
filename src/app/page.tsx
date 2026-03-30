@@ -241,6 +241,7 @@ export default function Home() {
       let buffer = "";
       const streamNewIds = new Set<string>();
       let streamIsBaseline = true;
+      const streamDiffs: SerializableSlotDiff[] = [];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -259,6 +260,7 @@ export default function Home() {
               setScanProgress({ restaurant: event.restaurant, index: event.index, total: event.total });
             } else if (event.type === "result" || event.type === "cached") {
               const diff: SerializableSlotDiff = event.diff;
+              streamDiffs.push(diff);
 
               setAllSlots((prev) => {
                 const next = new Map(prev);
@@ -333,11 +335,12 @@ export default function Home() {
         }
       }
 
-      // Auto-book after stream completes (only filtered slots)
-      if (currentAuth?.authenticated && !streamIsBaseline && autoBookIds.size > 0 && latestResult && currentSettings) {
-        for (const diff of latestResult.diffs) {
+      // Auto-book: if any restaurant with autobook enabled has new matching slots, book the first one
+      if (currentAuth?.authenticated && !streamIsBaseline && autoBookIds.size > 0 && currentSettings) {
+        for (const diff of streamDiffs) {
+          if (diff.newSlots.length === 0 || !autoBookIds.has(diff.restaurant.id)) continue;
           const matchingNew = diff.newSlots.filter((s) => slotMatchesFilters(s, currentSettings));
-          if (matchingNew.length > 0 && autoBookIds.has(diff.restaurant.id)) {
+          if (matchingNew.length > 0) {
             handleBook(matchingNew[0]);
           }
         }
