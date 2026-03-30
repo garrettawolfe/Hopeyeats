@@ -50,6 +50,55 @@ export function clearCachedAuth(): void {
   cachedAuth = null;
 }
 
+/**
+ * Set auth from a raw token (obtained from Resy website DevTools).
+ * Validates the token by fetching user info from Resy.
+ */
+export async function setAuthFromToken(
+  authToken: string,
+): Promise<ResyAuthTokens | { error: string }> {
+  try {
+    // Validate the token by fetching user info
+    const response = await fetch(`${RESY_API_BASE}/2/user`, {
+      method: "GET",
+      headers: {
+        Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
+        "X-Resy-Auth-Token": authToken,
+        "X-Resy-Universal-Auth": authToken,
+        Accept: "application/json",
+        Origin: "https://resy.com",
+        Referer: "https://resy.com/",
+      },
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      console.error(`[ResyAuth] Token validation failed: ${response.status} — ${text}`);
+      return { error: `Invalid token — Resy returned ${response.status}` };
+    }
+
+    const data = await response.json();
+    console.log("[ResyAuth] Token validated, user keys:", Object.keys(data));
+
+    const result: ResyAuthTokens = {
+      authToken,
+      paymentMethodId: data.payment_method_id
+        ?? data.payment_methods?.[0]?.id
+        ?? null,
+      firstName: data.first_name ?? data.bio?.first_name ?? "",
+      lastName: data.last_name ?? data.bio?.last_name ?? "",
+      email: data.em_address ?? data.bio?.em_address ?? "",
+    };
+
+    cachedAuth = result;
+    console.log(`[ResyAuth] Token auth as ${result.firstName} ${result.lastName}`);
+    return result;
+  } catch (err) {
+    console.error("[ResyAuth] Token validation error:", err);
+    return { error: err instanceof Error ? err.message : "Token validation failed" };
+  }
+}
+
 // ─── Headers ────────────────────────────────────────────────────────────────
 
 function buildAuthHeaders(authToken: string): Record<string, string> {

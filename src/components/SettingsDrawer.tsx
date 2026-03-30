@@ -54,6 +54,7 @@ interface Props {
   onSettingsChange: (s: AppSettings) => void;
   resyAuth: { authenticated: boolean; firstName?: string; lastName?: string } | null;
   onResyLogin: (email: string, password: string) => Promise<true | string>;
+  onResyTokenAuth: (token: string) => Promise<true | string>;
   onResyLogout: () => void;
 }
 
@@ -81,12 +82,15 @@ export default function SettingsDrawer({
   onSettingsChange,
   resyAuth,
   onResyLogin,
+  onResyTokenAuth,
   onResyLogout,
 }: Props) {
   const [local, setLocal] = useState<AppSettings>(settings);
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [authMode, setAuthMode] = useState<"token" | "password">("token");
+  const [tokenInput, setTokenInput] = useState("");
 
   useEffect(() => {
     setLocal(settings);
@@ -170,42 +174,100 @@ export default function SettingsDrawer({
               </div>
             ) : (
               <div className="space-y-3">
-                <input
-                  type="email"
-                  placeholder="Resy email"
-                  value={local.resyEmail}
-                  onChange={(e) => update({ resyEmail: e.target.value })}
-                  className="w-full px-4 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
-                />
-                <div className="relative">
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    placeholder="Resy password"
-                    value={local.resyPassword}
-                    onChange={(e) => update({ resyPassword: e.target.value })}
-                    className="w-full px-4 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50 pr-16"
-                  />
+                {/* Auth mode toggle */}
+                <div className="flex gap-1 bg-stone-100 p-0.5 rounded-lg">
                   <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-stone-400 hover:text-stone-600"
+                    onClick={() => setAuthMode("token")}
+                    className={`flex-1 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                      authMode === "token" ? "bg-white text-charcoal shadow-sm" : "text-stone-400"
+                    }`}
                   >
-                    {showPassword ? "Hide" : "Show"}
+                    Auth Token (recommended)
+                  </button>
+                  <button
+                    onClick={() => setAuthMode("password")}
+                    className={`flex-1 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                      authMode === "password" ? "bg-white text-charcoal shadow-sm" : "text-stone-400"
+                    }`}
+                  >
+                    Email/Password
                   </button>
                 </div>
-                <button
-                  onClick={handleLogin}
-                  disabled={loginLoading || !local.resyEmail || !local.resyPassword}
-                  className="w-full py-2.5 bg-charcoal text-white rounded-xl text-sm font-medium hover:bg-charcoal/90 transition-colors disabled:opacity-40"
-                >
-                  {loginLoading ? "Logging in..." : "Connect Resy Account"}
-                </button>
+
+                {authMode === "token" ? (
+                  <>
+                    <textarea
+                      placeholder="Paste your Resy auth token here..."
+                      value={tokenInput}
+                      onChange={(e) => setTokenInput(e.target.value)}
+                      rows={3}
+                      className="w-full px-4 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50 font-mono text-xs resize-none"
+                    />
+                    <button
+                      onClick={async () => {
+                        setLoginLoading(true);
+                        setLoginError(null);
+                        const result = await onResyTokenAuth(tokenInput.trim());
+                        if (typeof result === "string") setLoginError(result);
+                        setLoginLoading(false);
+                      }}
+                      disabled={loginLoading || !tokenInput.trim()}
+                      className="w-full py-2.5 bg-charcoal text-white rounded-xl text-sm font-medium hover:bg-charcoal/90 transition-colors disabled:opacity-40"
+                    >
+                      {loginLoading ? "Validating..." : "Connect with Token"}
+                    </button>
+                    <div className="bg-stone-50 rounded-lg p-3 space-y-1.5">
+                      <p className="text-[11px] font-medium text-charcoal">How to get your auth token:</p>
+                      <ol className="text-[10px] text-stone-500 space-y-1 list-decimal pl-3.5">
+                        <li>Go to <a href="https://resy.com" target="_blank" rel="noopener noreferrer" className="underline text-stone-600">resy.com</a> and log in</li>
+                        <li>Open DevTools (F12 or Cmd+Opt+I)</li>
+                        <li>Go to the <strong>Network</strong> tab</li>
+                        <li>Click on any request to <strong>api.resy.com</strong></li>
+                        <li>Copy the <strong>x-resy-auth-token</strong> header value</li>
+                      </ol>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      type="email"
+                      placeholder="Resy email"
+                      value={local.resyEmail}
+                      onChange={(e) => update({ resyEmail: e.target.value })}
+                      className="w-full px-4 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
+                    />
+                    <div className="relative">
+                      <input
+                        type={showPassword ? "text" : "password"}
+                        placeholder="Resy password"
+                        value={local.resyPassword}
+                        onChange={(e) => update({ resyPassword: e.target.value })}
+                        className="w-full px-4 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50 pr-16"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-stone-400 hover:text-stone-600"
+                      >
+                        {showPassword ? "Hide" : "Show"}
+                      </button>
+                    </div>
+                    <button
+                      onClick={handleLogin}
+                      disabled={loginLoading || !local.resyEmail || !local.resyPassword}
+                      className="w-full py-2.5 bg-charcoal text-white rounded-xl text-sm font-medium hover:bg-charcoal/90 transition-colors disabled:opacity-40"
+                    >
+                      {loginLoading ? "Logging in..." : "Connect Resy Account"}
+                    </button>
+                    <p className="text-[10px] text-amber-500">
+                      Note: Resy may block automated login. If this fails, use the Auth Token method instead.
+                    </p>
+                  </>
+                )}
+
                 {loginError && (
                   <p className="text-xs text-red-500">{loginError}</p>
                 )}
-                <p className="text-[10px] text-stone-400">
-                  Required for auto-booking. Your credentials are only sent to Resy's API and stored in your browser.
-                </p>
               </div>
             )}
           </section>

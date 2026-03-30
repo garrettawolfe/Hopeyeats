@@ -374,6 +374,21 @@ export default function Home() {
     }
   };
 
+  const handleResyTokenAuth = async (token: string): Promise<true | string> => {
+    try {
+      const res = await fetch("/api/resy-auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ authToken: token }),
+      });
+      const data = await res.json();
+      if (data.authenticated) { setResyAuth(data); return true; }
+      return data.error || "Token validation failed";
+    } catch (err) {
+      return err instanceof Error ? err.message : "Network error";
+    }
+  };
+
   const handleResyLogout = async () => {
     await fetch("/api/resy-auth", {
       method: "POST",
@@ -687,6 +702,7 @@ export default function Home() {
         onSettingsChange={(s) => { setSettings(s); saveSettings(s); }}
         resyAuth={resyAuth}
         onResyLogin={handleResyLogin}
+        onResyTokenAuth={handleResyTokenAuth}
         onResyLogout={handleResyLogout}
       />
     </div>
