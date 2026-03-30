@@ -18,6 +18,7 @@ import SettingsDrawer, {
   type AppSettings,
 } from "@/components/SettingsDrawer";
 import RestaurantMonitorCard from "@/components/RestaurantMonitorCard";
+import LoginPage from "@/components/LoginPage";
 
 const resyRestaurants = restaurants.filter(
   (r) =>
@@ -107,6 +108,7 @@ export default function Home() {
   const [bookingLog, setBookingLog] = useState<BookingLog[]>([]);
   const [search, setSearch] = useState("");
   const [filterMode, setFilterMode] = useState<"all" | "available" | "monitored">("all");
+  const [skipSetup, setSkipSetup] = useState(false);
 
   // --- Initialize profiles on mount ---
   useEffect(() => {
@@ -284,22 +286,22 @@ export default function Home() {
                 setNewSlotIds(new Set(streamNewIds));
               }
             } else if (event.type === "activity") {
-              // Recompute activity counts based on filtered slots
-              const restaurantSlots = allSlots.get(
-                // Find restaurant ID from name (activity events only have name)
-                resyRestaurants.find((r) => r.name === event.restaurant)?.id ?? ""
-              ) ?? [];
-              const filteredCount = currentSettings
-                ? filterSlotsBySettings(restaurantSlots, currentSettings).length
-                : event.slotCount;
+              // Use filtered counts from current stream diffs
+              const restaurantId = resyRestaurants.find((r) => r.name === event.restaurant)?.id;
+              const streamDiff = restaurantId ? streamDiffs.find((d) => d.restaurant.id === restaurantId) : null;
+              const rawSlots = streamDiff?.currentSlots ?? [];
+              const filteredSlots = currentSettings ? filterSlotsBySettings(rawSlots, currentSettings) : rawSlots;
+              const filteredNew = streamDiff && currentSettings
+                ? streamDiff.newSlots.filter((s) => slotMatchesFilters(s, currentSettings)).length
+                : event.newCount;
 
-              if (filteredCount > 0 || event.slotCount > 0) {
+              if (filteredSlots.length > 0) {
                 setActivityFeed((prev) => [
                   {
                     id: `${event.restaurant}-${Date.now()}`,
                     restaurant: event.restaurant,
-                    slotCount: filteredCount || event.slotCount,
-                    newCount: event.newCount,
+                    slotCount: filteredSlots.length,
+                    newCount: filteredNew,
                     timestamp: Date.now(),
                   },
                   ...prev,
@@ -537,6 +539,30 @@ export default function Home() {
   const totalNewSlots = newSlotIds.size;
 
   if (!settings) return null;
+
+  // Show login page if no auth token is configured and user hasn't skipped
+  const needsSetup = !settings.resyAuthToken && !resyAuth?.authenticated && !skipSetup;
+
+  if (needsSetup) {
+    return (
+      <LoginPage
+        profiles={profiles}
+        activeProfile={activeProfileName}
+        onSwitchProfile={handleSwitchProfile}
+        onCreateProfile={handleCreateProfile}
+        onTokenAuth={async (token) => {
+          const result = await handleResyTokenAuth(token);
+          if (result === true && settings) {
+            const next = { ...settings, resyAuthToken: token };
+            setSettings(next);
+            saveSettings(next);
+          }
+          return result;
+        }}
+        onSkip={() => setSkipSetup(true)}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-cream">
