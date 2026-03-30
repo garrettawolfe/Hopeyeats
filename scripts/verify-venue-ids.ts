@@ -1,108 +1,191 @@
 /**
- * Run with: npx tsx scripts/verify-venue-ids.ts
+ * Run with: npm run verify:venues
  *
- * Checks each restaurant's venue ID against the Resy API.
- * Reports mismatches and missing IDs.
+ * Two-phase venue ID verification:
+ * 1. Validate existing IDs by hitting /4/find — 400 = bad ID, 200/500 = ID exists
+ * 2. Try to resolve correct IDs via multiple API approaches
  */
 
 const RESY_API_KEY = "VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5";
+const RESY_LEGACY_KEY = "youarewhereyoueat";
 
-interface VenueCheck {
-  name: string;
-  slug: string;
-  ourId: number | null;
-  actualId: number | null;
-  match: boolean;
-  error?: string;
+const headers = {
+  Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
+  Accept: "application/json",
+  "User-Agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  Origin: "https://resy.com",
+  Referer: "https://resy.com/",
+  "X-Origin": "https://resy.com",
+};
+
+function tomorrow(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return d.toISOString().split("T")[0];
 }
 
-async function resolveVenueId(slug: string): Promise<number | null> {
-  try {
-    const params = new URLSearchParams({ url_slug: slug, location: "1" });
-    const res = await fetch(
-      `https://api.resy.com/3/venue?${params}`,
-      {
-        headers: {
-          Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
-          Accept: "application/json",
-        },
-      }
-    );
-    if (!res.ok) {
-      console.error(`  [${res.status}] for slug "${slug}"`);
-      return null;
+/**
+ * Phase 1: Check if a venue ID is valid by hitting /4/find.
+ * - 200 = valid ID, has availability
+ * - 500 = valid ID, server error (but ID exists)
+ * - 400 = invalid/wrong ID
+ * - 404 = ID doesn't exist
+ */
+async function validateVenueId(
+  venueId: number
+): Promise<{ valid: boolean; status: number; body: string }> {
+  const date = tomorrow();
+  const params = new URLSearchParams({
+    venue_id: venueId.toString(),
+    day: date,
+    party_size: "2",
+  });
+  const res = await fetch(`https://api.resy.com/4/find?${params}`, {
+    headers,
+  });
+  const body = await res.text().catch(() => "");
+  return {
+    valid: res.status === 200 || res.status === 500,
+    status: res.status,
+    body: body.slice(0, 200),
+  };
+}
+
+/**
+ * Phase 2: Try to resolve venue ID from slug using multiple approaches.
+ */
+async function resolveFromSlug(slug: string): Promise<number | null> {
+  // Approach 1: /3/venue with url_slug + location
+  for (const locParam of ["location", "location_id"]) {
+    for (const key of [RESY_API_KEY, RESY_LEGACY_KEY]) {
+      const params = new URLSearchParams({ url_slug: slug, [locParam]: "1" });
+      try {
+        const res = await fetch(`https://api.resy.com/3/venue?${params}`, {
+          headers: {
+            ...headers,
+            Authorization: `ResyAPI api_key="${key}"`,
+          },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const id = data?.id?.resy;
+          if (id) return id;
+        }
+      } catch {}
     }
-    const data = await res.json();
-    return data?.id?.resy ?? null;
-  } catch (err) {
-    console.error(`  Error for "${slug}":`, err);
-    return null;
   }
+
+  // Approach 2: /2/venue with url_slug
+  try {
+    const params = new URLSearchParams({ url_slug: slug });
+    const res = await fetch(`https://api.resy.com/2/venue?${params}`, {
+      headers,
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const id = data?.id?.resy ?? data?.venue?.id?.resy;
+      if (id) return id;
+    }
+  } catch {}
+
+  // Approach 3: Search for the venue name
+  try {
+    const searchName = slug.replace(/-/g, " ");
+    const params = new URLSearchParams({
+      query: searchName,
+      geo: '{"latitude":40.7128,"longitude":-74.006}',
+      types: '["venue"]',
+    });
+    const res = await fetch(`https://api.resy.com/3/venuesearch/search?${params}`, {
+      headers,
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const hits = data?.search?.hits ?? [];
+      for (const hit of hits) {
+        const hitSlug = hit?.url_slug ?? "";
+        if (hitSlug === slug || hitSlug.includes(slug)) {
+          return hit?.id?.resy ?? null;
+        }
+      }
+    }
+  } catch {}
+
+  return null;
 }
 
 async function main() {
-  // Import restaurants
   const { restaurants } = await import("../src/data/restaurants");
 
-  const results: VenueCheck[] = [];
+  console.log("Phase 1: Validating existing venue IDs via /4/find...\n");
+
+  const invalid: { name: string; slug: string; id: number; status: number; body: string }[] = [];
+  const valid: { name: string; id: number }[] = [];
 
   for (const r of restaurants) {
-    if (!r.resyUrl) continue;
+    if (!r.resyUrl || !r.resyVenueId) continue;
 
-    // Extract slug from URL
-    const slug = r.resyUrl.split("/venues/")[1];
-    if (!slug) {
-      console.log(`⚠ ${r.name}: could not extract slug from ${r.resyUrl}`);
-      continue;
-    }
+    const slug = r.resyUrl.split("/venues/")[1] ?? "";
+    process.stdout.write(`  ${r.name} (${r.resyVenueId})... `);
 
-    console.log(`Checking ${r.name} (slug: ${slug}, our ID: ${r.resyVenueId})...`);
+    const result = await validateVenueId(r.resyVenueId);
 
-    const actualId = await resolveVenueId(slug);
-
-    const match = r.resyVenueId === actualId;
-    results.push({
-      name: r.name,
-      slug,
-      ourId: r.resyVenueId,
-      actualId,
-      match,
-    });
-
-    if (!match) {
-      console.log(
-        `  ❌ MISMATCH: our ID = ${r.resyVenueId}, actual = ${actualId}`
-      );
+    if (result.valid) {
+      console.log(`✅ valid (${result.status})`);
+      valid.push({ name: r.name, id: r.resyVenueId });
     } else {
-      console.log(`  ✅ ID ${actualId} is correct`);
+      console.log(`❌ INVALID (${result.status}) ${result.body.slice(0, 100)}`);
+      invalid.push({ name: r.name, slug, id: r.resyVenueId, status: result.status, body: result.body });
     }
 
-    // Small delay between requests
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+
+  console.log(`\n${"=".repeat(60)}`);
+  console.log(`Valid: ${valid.length}, Invalid: ${invalid.length}`);
+
+  if (invalid.length === 0) {
+    console.log("\nAll venue IDs are valid! 🎉");
+    return;
+  }
+
+  console.log(`\nPhase 2: Trying to resolve correct IDs for ${invalid.length} invalid venues...\n`);
+
+  const fixes: { name: string; slug: string; oldId: number; newId: number }[] = [];
+
+  for (const inv of invalid) {
+    process.stdout.write(`  Resolving ${inv.name} (slug: ${inv.slug})... `);
+    const newId = await resolveFromSlug(inv.slug);
+    if (newId) {
+      console.log(`✅ found: ${newId}`);
+      fixes.push({ name: inv.name, slug: inv.slug, oldId: inv.id, newId });
+    } else {
+      console.log(`❌ could not resolve`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
-  console.log("\n" + "=".repeat(60));
-  console.log("SUMMARY");
-  console.log("=".repeat(60));
-
-  const mismatches = results.filter((r) => !r.match);
-  const correct = results.filter((r) => r.match);
-
-  console.log(`✅ Correct: ${correct.length}`);
-  console.log(`❌ Mismatches: ${mismatches.length}`);
-
-  if (mismatches.length > 0) {
-    console.log("\nMISMATCHES:");
-    for (const m of mismatches) {
-      console.log(`  ${m.name}: our ID = ${m.ourId}, actual = ${m.actualId} (slug: ${m.slug})`);
+  if (fixes.length > 0) {
+    console.log(`\n${"=".repeat(60)}`);
+    console.log("FIXES NEEDED in src/data/restaurants.ts:\n");
+    for (const f of fixes) {
+      console.log(`  ${f.name}: ${f.oldId} → ${f.newId}`);
     }
+  }
 
-    console.log("\nCopy-paste fix for restaurants.ts:");
-    for (const m of mismatches) {
-      if (m.actualId) {
-        console.log(`  "${m.name}": resyVenueId: ${m.actualId},`);
-      }
+  if (invalid.length > fixes.length) {
+    const unresolved = invalid.filter(
+      (inv) => !fixes.some((f) => f.slug === inv.slug)
+    );
+    console.log("\nCould not auto-resolve these (check manually on resy.com):");
+    for (const u of unresolved) {
+      console.log(`  ${u.name}: https://resy.com/cities/new-york-ny/venues/${u.slug}`);
     }
+    console.log(
+      "\nTip: Open each URL in Chrome, then check DevTools Network tab"
+    );
+    console.log('for API calls containing "venue_id" in the request params.');
   }
 }
 
