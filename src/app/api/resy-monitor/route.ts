@@ -22,6 +22,7 @@ import {
   sendNotifications,
   type NotificationConfig,
 } from "@/lib/notifications";
+import { getCachedAuth } from "@/lib/resyBooking";
 
 // Allow up to 120s for Vercel Pro (default is 10s on free tier)
 export const maxDuration = 120;
@@ -199,12 +200,14 @@ export async function POST(request: Request) {
           : lookAhead;
         const dates = getForwardDates(effectiveLookAhead);
 
+        const auth = getCachedAuth();
         const slots = await checkVenueAvailability(
           restaurant.resyVenueId,
           restaurant.name,
           restaurant.resyUrl,
           dates,
           partySize,
+          auth?.authToken,
         );
 
         const diff = updateSnapshot(monitorState, restaurant, slots);

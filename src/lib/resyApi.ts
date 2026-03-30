@@ -157,7 +157,7 @@ export interface AvailabilitySlot {
 
 // ─── Headers ─────────────────────────────────────────────────────────────────
 
-function buildHeaders(): Record<string, string> {
+function buildHeaders(authToken?: string): Record<string, string> {
   const headers: Record<string, string> = {
     Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
     Accept: "application/json, text/plain, */*",
@@ -167,6 +167,12 @@ function buildHeaders(): Record<string, string> {
     Referer: "https://resy.com/",
     "User-Agent": randomUserAgent(),
   };
+
+  // Include auth token if available (required by /4/find for many venues)
+  if (authToken) {
+    headers["X-Resy-Auth-Token"] = authToken;
+    headers["X-Resy-Universal-Auth"] = authToken;
+  }
 
   // Randomly include optional headers to vary fingerprint
   if (Math.random() > 0.5) {
@@ -191,6 +197,7 @@ export async function findAvailability(
   venueId: number,
   date: string,
   partySize: number = 2,
+  authToken?: string,
 ): Promise<ResyFindResponse | null> {
   // Respect backoff period
   if (isBackedOff()) {
@@ -210,11 +217,13 @@ export async function findAvailability(
     );
   }
 
-  // Don't send lat/long — randomized coords cause 400/500 errors from Resy
+  // Use lat=0&long=0 per working resy bots (Alkaar/resy-booking-bot)
   const params = new URLSearchParams({
     venue_id: venueId.toString(),
     day: date,
     party_size: partySize.toString(),
+    lat: "0",
+    long: "0",
   });
 
   const url = `${RESY_API_BASE}/4/find?${params}`;
@@ -223,7 +232,7 @@ export async function findAvailability(
 
   let response = await fetch(url, {
     method: "GET",
-    headers: buildHeaders(),
+    headers: buildHeaders(authToken),
   });
 
   // Retry once on 500 (server error) with a brief delay
@@ -232,7 +241,7 @@ export async function findAvailability(
     rateLimitState.totalRequests++;
     response = await fetch(url, {
       method: "GET",
-      headers: buildHeaders(),
+      headers: buildHeaders(authToken),
     });
   }
 
@@ -438,6 +447,7 @@ export async function checkVenueAvailability(
   resyBaseUrl: string,
   dates: string[],
   partySize: number = 2,
+  authToken?: string,
 ): Promise<AvailabilitySlot[]> {
   if (dates.length === 0) return [];
 
@@ -483,7 +493,7 @@ export async function checkVenueAvailability(
     }
 
     try {
-      const response = await findAvailability(venueId, date, partySize);
+      const response = await findAvailability(venueId, date, partySize, authToken);
       if (response) {
         const slots = parseSlots(response, venueId, venueName, resyBaseUrl);
         allSlots.push(...slots);
