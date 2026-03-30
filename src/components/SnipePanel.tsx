@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import type { Restaurant } from "@/data/restaurants";
 
 interface SnipeEvent {
@@ -8,14 +8,18 @@ interface SnipeEvent {
   [key: string]: unknown;
 }
 
-interface SnipeConfig {
+interface ScheduledSnipe {
+  id: string;
   restaurantIds: string[];
-  date: string;
-  partySize: number;
+  restaurantNames: string[];
+  dates: string[];
   preferredTimes: string[];
   timeRadius: number;
   snipeWindowSeconds: number;
-  pollIntervalMs: number;
+  partySize: number;
+  dropTime: string; // "HH:MM" in ET — when to auto-launch
+  status: "waiting" | "running" | "completed" | "failed";
+  result?: string;
 }
 
 interface Props {
@@ -31,27 +35,173 @@ const TIME_OPTIONS = [
   "20:00", "20:30", "21:00", "21:30", "22:00",
 ];
 
+const DROP_TIME_OPTIONS = [
+  "08:00", "09:00", "10:00", "11:00", "12:00",
+];
+
 function formatTime12(t: string): string {
   const [h, m] = t.split(":").map(Number);
   const ampm = h >= 12 ? "PM" : "AM";
   return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
+function formatDateShort(dateStr: string): string {
+  const d = new Date(dateStr + "T12:00:00");
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+
+function getETNow(): { hours: number; minutes: number; dateStr: string } {
+  const now = new Date();
+  const etStr = now.toLocaleString("en-US", { timeZone: "America/New_York" });
+  const etDate = new Date(etStr);
+  return {
+    hours: etDate.getHours(),
+    minutes: etDate.getMinutes(),
+    dateStr: etDate.toISOString().split("T")[0],
+  };
+}
+
+function getDropDate(restaurant: Restaurant): string | null {
+  if (!restaurant.advanceDays) return null;
+  const d = new Date();
+  d.setDate(d.getDate() + restaurant.advanceDays);
+  return d.toISOString().split("T")[0];
+}
+
+const STORAGE_KEY = "wolfepack_scheduled_snipes";
+
+function loadScheduledSnipes(): ScheduledSnipe[] {
+  if (typeof window === "undefined") return [];
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
+  } catch { return []; }
+}
+
+function saveScheduledSnipes(snipes: ScheduledSnipe[]) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(snipes));
+}
+
 export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize, onBooked }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [date, setDate] = useState(() => {
+  const [dates, setDates] = useState<string[]>(() => {
     const d = new Date();
     d.setDate(d.getDate() + 1);
-    return d.toISOString().split("T")[0];
+    return [d.toISOString().split("T")[0]];
   });
+  const [dateInput, setDateInput] = useState("");
   const [selectedTimes, setSelectedTimes] = useState<Set<string>>(new Set(["19:00", "19:30", "20:00"]));
   const [timeRadius, setTimeRadius] = useState(30);
-  const [snipeWindow, setSnipeWindow] = useState(30);
+  const [snipeWindow, setSnipeWindow] = useState(60);
   const [isRunning, setIsRunning] = useState(false);
   const [events, setEvents] = useState<SnipeEvent[]>([]);
   const [result, setResult] = useState<"success" | "failed" | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+
+  // Scheduled snipes
+  const [scheduledSnipes, setScheduledSnipes] = useState<ScheduledSnipe[]>(() => loadScheduledSnipes());
+  const [showScheduler, setShowScheduler] = useState(false);
+  const [scheduleDropTime, setScheduleDropTime] = useState("09:00");
+  const schedulerTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Persist scheduled snipes
+  useEffect(() => {
+    saveScheduledSnipes(scheduledSnipes);
+  }, [scheduledSnipes]);
+
+  // Scheduler: check every 10s if any scheduled snipe should launch
+  const runScheduledSnipe = useCallback(async (snipe: ScheduledSnipe) => {
+    setScheduledSnipes(prev => prev.map(s =>
+      s.id === snipe.id ? { ...s, status: "running" as const } : s
+    ));
+
+    try {
+      const res = await fetch("/api/resy-snipe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          restaurantIds: snipe.restaurantIds,
+          dates: snipe.dates,
+          partySize: snipe.partySize,
+          preferredTimes: snipe.preferredTimes,
+          timeRadius: snipe.timeRadius,
+          snipeWindowSeconds: snipe.snipeWindowSeconds,
+          pollIntervalMs: 300,
+          authToken,
+        }),
+      });
+
+      if (!res.ok || !res.body) {
+        setScheduledSnipes(prev => prev.map(s =>
+          s.id === snipe.id ? { ...s, status: "failed" as const, result: "Request failed" } : s
+        ));
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let booked = false;
+      let resultText = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line);
+            if (event.type === "booked") {
+              booked = true;
+              resultText = `Booked ${event.restaurant} at ${event.time} on ${event.date}`;
+              onBooked?.(event);
+            } else if (event.type === "done") {
+              if (!booked) resultText = `No booking after ${event.attempts} attempts`;
+            }
+          } catch { /* skip */ }
+        }
+      }
+
+      setScheduledSnipes(prev => prev.map(s =>
+        s.id === snipe.id ? { ...s, status: booked ? "completed" as const : "failed" as const, result: resultText } : s
+      ));
+    } catch (err) {
+      setScheduledSnipes(prev => prev.map(s =>
+        s.id === snipe.id ? { ...s, status: "failed" as const, result: String(err) } : s
+      ));
+    }
+  }, [authToken, onBooked]);
+
+  useEffect(() => {
+    if (schedulerTimerRef.current) clearInterval(schedulerTimerRef.current);
+
+    schedulerTimerRef.current = setInterval(() => {
+      const et = getETNow();
+      const nowTime = `${String(et.hours).padStart(2, "0")}:${String(et.minutes).padStart(2, "0")}`;
+
+      setScheduledSnipes(prev => {
+        const waiting = prev.filter(s => s.status === "waiting");
+        for (const snipe of waiting) {
+          // Launch 5 seconds before drop time for connection warmup
+          const [dropH, dropM] = snipe.dropTime.split(":").map(Number);
+          const dropMinutes = dropH * 60 + dropM;
+          const nowMinutes = et.hours * 60 + et.minutes;
+          if (nowMinutes >= dropMinutes - 1 && nowMinutes <= dropMinutes + 2) {
+            runScheduledSnipe(snipe);
+          }
+        }
+        return prev;
+      });
+    }, 10_000);
+
+    return () => {
+      if (schedulerTimerRef.current) clearInterval(schedulerTimerRef.current);
+    };
+  }, [runScheduledSnipe]);
 
   const toggleRestaurant = (id: string) => {
     setSelectedIds(prev => {
@@ -71,6 +221,17 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     });
   };
 
+  const addDate = (d: string) => {
+    if (d && !dates.includes(d)) {
+      setDates(prev => [...prev, d].sort());
+    }
+    setDateInput("");
+  };
+
+  const removeDate = (d: string) => {
+    setDates(prev => prev.filter(x => x !== d));
+  };
+
   const selectAllRestaurants = () => {
     setSelectedIds(new Set(restaurants.filter(r => r.resyVenueId).map(r => r.id)));
   };
@@ -79,8 +240,42 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     setSelectedIds(new Set());
   };
 
+  // Auto-fill dates from selected restaurant drop windows
+  const autoFillDropDates = () => {
+    const selected = restaurants.filter(r => selectedIds.has(r.id));
+    const dropDates = new Set<string>(dates);
+    for (const r of selected) {
+      const dd = getDropDate(r);
+      if (dd) dropDates.add(dd);
+    }
+    setDates(Array.from(dropDates).sort());
+  };
+
+  const scheduleSnipe = () => {
+    if (selectedIds.size === 0 || dates.length === 0 || selectedTimes.size === 0) return;
+    const selectedRestaurants = restaurants.filter(r => selectedIds.has(r.id));
+    const snipe: ScheduledSnipe = {
+      id: `sched-${Date.now()}`,
+      restaurantIds: Array.from(selectedIds),
+      restaurantNames: selectedRestaurants.map(r => r.name),
+      dates: [...dates],
+      preferredTimes: Array.from(selectedTimes).sort(),
+      timeRadius,
+      snipeWindowSeconds: snipeWindow,
+      partySize,
+      dropTime: scheduleDropTime,
+      status: "waiting",
+    };
+    setScheduledSnipes(prev => [...prev, snipe]);
+    setShowScheduler(false);
+  };
+
+  const removeScheduledSnipe = (id: string) => {
+    setScheduledSnipes(prev => prev.filter(s => s.id !== id));
+  };
+
   const launchSnipe = async () => {
-    if (selectedIds.size === 0 || selectedTimes.size === 0 || !date) return;
+    if (selectedIds.size === 0 || selectedTimes.size === 0 || dates.length === 0) return;
 
     setIsRunning(true);
     setEvents([]);
@@ -90,20 +285,19 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     abortRef.current = controller;
 
     try {
-      const config: SnipeConfig = {
-        restaurantIds: Array.from(selectedIds),
-        date,
-        partySize,
-        preferredTimes: Array.from(selectedTimes).sort(),
-        timeRadius,
-        snipeWindowSeconds: snipeWindow,
-        pollIntervalMs: 300,
-      };
-
       const res = await fetch("/api/resy-snipe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...config, authToken }),
+        body: JSON.stringify({
+          restaurantIds: Array.from(selectedIds),
+          dates,
+          partySize,
+          preferredTimes: Array.from(selectedTimes).sort(),
+          timeRadius,
+          snipeWindowSeconds: snipeWindow,
+          pollIntervalMs: 300,
+          authToken,
+        }),
         signal: controller.signal,
       });
 
@@ -140,13 +334,10 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               setResult("failed");
             }
 
-            // Auto-scroll log
             setTimeout(() => {
               logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
             }, 50);
-          } catch {
-            // skip malformed
-          }
+          } catch { /* skip */ }
         }
       }
     } catch (err) {
@@ -168,26 +359,30 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
 
   const getEventIcon = (type: string) => {
     switch (type) {
-      case "started": return "🚀";
-      case "attempt": return "🔍";
-      case "slots_found": return "✨";
-      case "booked": return "✅";
-      case "book_failed": return "❌";
-      case "error": return "⚠️";
-      case "done": return "🏁";
-      case "cancelled": return "🛑";
-      default: return "•";
+      case "started": return "\u{1F680}";
+      case "attempt": return "\u{1F50D}";
+      case "slots_found": return "\u2728";
+      case "booked": return "\u2705";
+      case "book_failed": return "\u274C";
+      case "error": return "\u26A0\uFE0F";
+      case "done": return "\u{1F3C1}";
+      case "cancelled": return "\u{1F6D1}";
+      default: return "\u2022";
     }
   };
 
   const getEventText = (event: SnipeEvent): string => {
     switch (event.type) {
-      case "started":
-        return `Targeting ${(event.targets as string[])?.join(", ")} on ${event.date}`;
+      case "started": {
+        const targets = event.targets as string[];
+        const ds = event.dates as string[] | undefined;
+        const dateStr = ds && ds.length > 1 ? `${ds.length} dates` : String(event.date ?? ds?.[0] ?? "");
+        return `Targeting ${targets?.join(", ")} on ${dateStr}`;
+      }
       case "attempt":
         return `Attempt #${event.attempt} (${Math.round(Number(event.elapsed) / 1000)}s)`;
       case "slots_found":
-        return `${event.restaurant}: ${event.count} slots found, best: ${formatTime12(String(event.bestTime))}`;
+        return `${event.restaurant} (${event.date}): ${event.count} slots, best: ${formatTime12(String(event.bestTime))}`;
       case "booked":
         return `BOOKED! ${event.restaurant} at ${formatTime12(String(event.time))} on ${event.date}`;
       case "book_failed":
@@ -195,7 +390,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
       case "error":
         return `Error: ${event.error}`;
       case "done":
-        return `Finished — ${event.attempts} attempts in ${Math.round(Number(event.elapsed) / 1000)}s`;
+        return `Finished \u2014 ${event.attempts} attempts in ${Math.round(Number(event.elapsed) / 1000)}s across ${event.datesSearched ?? 1} date(s)`;
       case "cancelled":
         return "Snipe cancelled";
       default:
@@ -205,29 +400,141 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
 
   const resyRestaurants = restaurants.filter(r => r.resyVenueId);
 
+  // Build drop info for selected restaurants
+  const selectedRestaurantInfo = restaurants.filter(r => selectedIds.has(r.id));
+  const dropInfoItems = selectedRestaurantInfo
+    .filter(r => r.bookingTime || r.advanceDays)
+    .map(r => ({
+      name: r.name,
+      advanceDays: r.advanceDays,
+      bookingTime: r.bookingTime,
+      dropDate: getDropDate(r),
+    }));
+
   return (
     <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden">
-      {/* Config Section */}
       <div className="p-4 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="font-serif text-lg text-charcoal">Snipe Mode</h2>
-          {!isAuthenticated && (
-            <span className="text-xs text-red-500 bg-red-50 px-2 py-1 rounded-full">Auth required</span>
+          <div className="flex items-center gap-2">
+            {!isAuthenticated && (
+              <span className="text-xs text-red-500 bg-red-50 px-2 py-1 rounded-full">Auth required</span>
+            )}
+          </div>
+        </div>
+
+        {/* Restaurant Selection */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs text-stone-500 font-medium">Target Restaurants ({selectedIds.size})</label>
+            <div className="flex gap-2">
+              <button onClick={selectAllRestaurants} disabled={isRunning} className="text-[10px] text-stone-400 hover:text-stone-600 underline">All</button>
+              <button onClick={clearAllRestaurants} disabled={isRunning} className="text-[10px] text-stone-400 hover:text-stone-600 underline">Clear</button>
+            </div>
+          </div>
+          <div className="max-h-40 overflow-y-auto border border-stone-200 rounded-lg p-2 space-y-0.5">
+            {resyRestaurants.map(r => (
+              <label
+                key={r.id}
+                className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-sm transition-colors ${
+                  selectedIds.has(r.id) ? "bg-gold/10 text-charcoal" : "text-stone-500 hover:bg-stone-50"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedIds.has(r.id)}
+                  onChange={() => toggleRestaurant(r.id)}
+                  disabled={isRunning}
+                  className="rounded border-stone-300 text-charcoal focus:ring-gold"
+                />
+                <span className="truncate">{r.name}</span>
+                <span className="text-[10px] text-stone-400 ml-auto shrink-0">
+                  {r.bookingTime ? `${r.advanceDays}d @ ${r.bookingTime}` : `${r.advanceDays}d rolling`}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Drop Time Info (when restaurants are selected) */}
+        {dropInfoItems.length > 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold text-amber-800">Reservation Drop Schedule</h3>
+              <button
+                onClick={autoFillDropDates}
+                disabled={isRunning}
+                className="text-[10px] bg-amber-200 text-amber-800 px-2 py-0.5 rounded-full hover:bg-amber-300 transition-colors font-medium"
+              >
+                Auto-fill drop dates
+              </button>
+            </div>
+            <div className="space-y-1">
+              {dropInfoItems.map(item => (
+                <div key={item.name} className="flex items-center justify-between text-xs">
+                  <span className="text-amber-700 truncate">{item.name}</span>
+                  <span className="text-amber-600 shrink-0 ml-2">
+                    {item.bookingTime ?? "Rolling"} &middot; {item.advanceDays}d ahead
+                    {item.dropDate && <span className="text-amber-800 font-medium"> &middot; next: {formatDateShort(item.dropDate)}</span>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Multi-Date Picker */}
+        <div>
+          <label className="block text-xs text-stone-500 font-medium mb-1.5">Target Dates ({dates.length})</label>
+          <div className="flex gap-2 mb-2">
+            <input
+              type="date"
+              value={dateInput}
+              onChange={(e) => setDateInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && dateInput) addDate(dateInput); }}
+              className="flex-1 px-3 py-2 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
+              disabled={isRunning}
+            />
+            <button
+              onClick={() => addDate(dateInput)}
+              disabled={isRunning || !dateInput}
+              className="px-3 py-2 bg-charcoal text-white rounded-lg text-sm font-medium hover:bg-charcoal/90 transition-colors disabled:opacity-40"
+            >
+              Add
+            </button>
+          </div>
+          {dates.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {dates.map(d => (
+                <span
+                  key={d}
+                  className="inline-flex items-center gap-1 bg-stone-100 text-stone-700 px-2.5 py-1 rounded-lg text-xs"
+                >
+                  {formatDateShort(d)}
+                  <button
+                    onClick={() => removeDate(d)}
+                    disabled={isRunning}
+                    className="text-stone-400 hover:text-stone-600 ml-0.5"
+                  >
+                    &times;
+                  </button>
+                </span>
+              ))}
+              {dates.length > 1 && (
+                <button
+                  onClick={() => setDates([])}
+                  disabled={isRunning}
+                  className="text-[10px] text-stone-400 hover:text-stone-600 underline px-1"
+                >
+                  Clear all
+                </button>
+              )}
+            </div>
           )}
         </div>
 
-        {/* Date + Time Radius + Window */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div>
-            <label className="block text-xs text-stone-500 mb-1">Date</label>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
-              disabled={isRunning}
-            />
-          </div>
+        {/* Config Row */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           <div>
             <label className="block text-xs text-stone-500 mb-1">Flexibility</label>
             <select
@@ -236,10 +543,10 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
               disabled={isRunning}
             >
-              <option value={15}>±15 min</option>
-              <option value={30}>±30 min</option>
-              <option value={60}>±60 min</option>
-              <option value={120}>±2 hrs</option>
+              <option value={15}>&plusmn;15 min</option>
+              <option value={30}>&plusmn;30 min</option>
+              <option value={60}>&plusmn;60 min</option>
+              <option value={120}>&plusmn;2 hrs</option>
             </select>
           </div>
           <div>
@@ -266,7 +573,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
 
         {/* Preferred Times */}
         <div>
-          <label className="block text-xs text-stone-500 mb-1.5">Preferred Times (in priority order)</label>
+          <label className="block text-xs text-stone-500 font-medium mb-1.5">Preferred Times</label>
           <div className="flex flex-wrap gap-1.5">
             {TIME_OPTIONS.map(t => (
               <button
@@ -285,47 +592,26 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           </div>
         </div>
 
-        {/* Restaurant Selection */}
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <label className="text-xs text-stone-500">Target Restaurants ({selectedIds.size})</label>
-            <div className="flex gap-2">
-              <button onClick={selectAllRestaurants} disabled={isRunning} className="text-[10px] text-stone-400 hover:text-stone-600 underline">All</button>
-              <button onClick={clearAllRestaurants} disabled={isRunning} className="text-[10px] text-stone-400 hover:text-stone-600 underline">Clear</button>
-            </div>
-          </div>
-          <div className="max-h-40 overflow-y-auto border border-stone-200 rounded-lg p-2 space-y-0.5">
-            {resyRestaurants.map(r => (
-              <label
-                key={r.id}
-                className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-sm transition-colors ${
-                  selectedIds.has(r.id) ? "bg-gold/10 text-charcoal" : "text-stone-500 hover:bg-stone-50"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedIds.has(r.id)}
-                  onChange={() => toggleRestaurant(r.id)}
-                  disabled={isRunning}
-                  className="rounded border-stone-300 text-charcoal focus:ring-gold"
-                />
-                <span className="truncate">{r.name}</span>
-                <span className="text-[10px] text-stone-400 ml-auto shrink-0">{r.neighborhood}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-
-        {/* Launch Button */}
+        {/* Action Buttons */}
         <div className="flex gap-2">
           {!isRunning ? (
-            <button
-              onClick={launchSnipe}
-              disabled={!isAuthenticated || selectedIds.size === 0 || selectedTimes.size === 0}
-              className="flex-1 py-3 bg-charcoal text-white rounded-xl text-sm font-semibold hover:bg-charcoal/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Launch Snipe ({selectedIds.size} restaurant{selectedIds.size !== 1 ? "s" : ""})
-            </button>
+            <>
+              <button
+                onClick={launchSnipe}
+                disabled={!isAuthenticated || selectedIds.size === 0 || selectedTimes.size === 0 || dates.length === 0}
+                className="flex-1 py-3 bg-charcoal text-white rounded-xl text-sm font-semibold hover:bg-charcoal/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Launch Now ({selectedIds.size} restaurant{selectedIds.size !== 1 ? "s" : ""}, {dates.length} date{dates.length !== 1 ? "s" : ""})
+              </button>
+              <button
+                onClick={() => setShowScheduler(!showScheduler)}
+                disabled={!isAuthenticated || selectedIds.size === 0 || selectedTimes.size === 0 || dates.length === 0}
+                className="px-4 py-3 border-2 border-charcoal text-charcoal rounded-xl text-sm font-semibold hover:bg-stone-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Schedule snipe for a specific drop time"
+              >
+                Schedule
+              </button>
+            </>
           ) : (
             <button
               onClick={cancelSnipe}
@@ -335,6 +621,82 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
             </button>
           )}
         </div>
+
+        {/* Schedule Picker */}
+        {showScheduler && (
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 space-y-3">
+            <h3 className="text-sm font-semibold text-blue-800">Schedule Snipe</h3>
+            <p className="text-xs text-blue-600">
+              Auto-launch this snipe at a specific time (ET). The bot will start sniping when the reservation window opens.
+              Keep this tab open — scheduled snipes run from your browser.
+            </p>
+            <div className="flex items-center gap-3">
+              <label className="text-xs text-blue-700">Drop time (ET):</label>
+              <select
+                value={scheduleDropTime}
+                onChange={(e) => setScheduleDropTime(e.target.value)}
+                className="px-3 py-2 border border-blue-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 bg-white"
+              >
+                {DROP_TIME_OPTIONS.map(t => (
+                  <option key={t} value={t}>{formatTime12(t)} ET</option>
+                ))}
+              </select>
+              <button
+                onClick={scheduleSnipe}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+              >
+                Confirm Schedule
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Scheduled Snipes List */}
+        {scheduledSnipes.length > 0 && (
+          <div className="border border-stone-200 rounded-xl overflow-hidden">
+            <div className="bg-stone-50 px-3 py-2 border-b border-stone-200">
+              <h3 className="text-xs font-semibold text-stone-600">Scheduled Snipes</h3>
+            </div>
+            <div className="divide-y divide-stone-100">
+              {scheduledSnipes.map(snipe => (
+                <div key={snipe.id} className="px-3 py-2.5 flex items-center gap-3">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${
+                    snipe.status === "waiting" ? "bg-blue-400 animate-pulse" :
+                    snipe.status === "running" ? "bg-amber-400 animate-pulse" :
+                    snipe.status === "completed" ? "bg-emerald-500" :
+                    "bg-red-400"
+                  }`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-medium text-stone-700 truncate">
+                      {snipe.restaurantNames.slice(0, 3).join(", ")}
+                      {snipe.restaurantNames.length > 3 && ` +${snipe.restaurantNames.length - 3}`}
+                    </div>
+                    <div className="text-[10px] text-stone-400">
+                      {snipe.dates.map(d => formatDateShort(d)).join(", ")} &middot; Drop: {formatTime12(snipe.dropTime)} ET
+                      {snipe.result && <span className="ml-1">&middot; {snipe.result}</span>}
+                    </div>
+                  </div>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                    snipe.status === "waiting" ? "bg-blue-100 text-blue-600" :
+                    snipe.status === "running" ? "bg-amber-100 text-amber-600" :
+                    snipe.status === "completed" ? "bg-emerald-100 text-emerald-600" :
+                    "bg-red-100 text-red-600"
+                  }`}>
+                    {snipe.status}
+                  </span>
+                  {(snipe.status === "waiting" || snipe.status === "completed" || snipe.status === "failed") && (
+                    <button
+                      onClick={() => removeScheduledSnipe(snipe.id)}
+                      className="text-stone-400 hover:text-stone-600 text-xs"
+                    >
+                      &times;
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Event Log */}
@@ -360,7 +722,6 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
             ))}
           </div>
 
-          {/* Result Banner */}
           {result === "success" && (
             <div className="px-4 py-3 bg-emerald-50 border-t border-emerald-200 text-emerald-700 text-sm font-medium text-center">
               Reservation booked successfully!
@@ -368,7 +729,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           )}
           {result === "failed" && !isRunning && (
             <div className="px-4 py-3 bg-red-50 border-t border-red-200 text-red-600 text-sm text-center">
-              No reservation booked. Try adjusting times or restaurants.
+              No reservation booked. Try adjusting times, dates, or restaurants.
             </div>
           )}
         </div>

@@ -13,7 +13,8 @@ export const maxDuration = 120;
  *
  * Body: {
  *   restaurantIds: string[],       // which restaurants to target
- *   date: string,                  // YYYY-MM-DD
+ *   dates: string[],               // ["YYYY-MM-DD", ...] multiple dates supported
+ *   date?: string,                 // single date (backwards compat)
  *   partySize: number,
  *   preferredTimes: string[],      // ["19:00", "19:30", "20:00"] in priority order
  *   timeRadius: number,            // minutes of flexibility (default 30)
@@ -28,7 +29,8 @@ export async function POST(request: Request) {
     const body = await request.json();
     const {
       restaurantIds = [],
-      date,
+      dates: rawDates,
+      date: singleDate,
       partySize = 2,
       preferredTimes = [],
       timeRadius = 30,
@@ -36,6 +38,11 @@ export async function POST(request: Request) {
       pollIntervalMs = 300,
       authToken,
     } = body;
+
+    // Support both `dates: [...]` and legacy `date: "..."`
+    const dates: string[] = rawDates && Array.isArray(rawDates) && rawDates.length > 0
+      ? rawDates
+      : singleDate ? [singleDate] : [];
 
     const effectiveAuthToken = authToken ?? auth?.authToken;
     if (!effectiveAuthToken) {
@@ -58,8 +65,8 @@ export async function POST(request: Request) {
       r => restaurantIds.includes(r.id) && r.resyVenueId
     );
 
-    if (targets.length === 0 || !date) {
-      return NextResponse.json({ error: "No valid targets or date" }, { status: 400 });
+    if (targets.length === 0 || dates.length === 0) {
+      return NextResponse.json({ error: "No valid targets or dates" }, { status: 400 });
     }
 
     resetConsecutiveErrors();
@@ -79,7 +86,7 @@ export async function POST(request: Request) {
       let booked = false;
       const failedTokens = new Set<string>();
 
-      await write({ type: "started", targets: targets.map(t => t.name), date, partySize });
+      await write({ type: "started", targets: targets.map(t => t.name), dates, partySize });
 
       while (Date.now() < deadline && !booked) {
         attempt++;
@@ -88,105 +95,112 @@ export async function POST(request: Request) {
         for (const restaurant of targets) {
           if (booked) break;
 
-          try {
-            const result = await findAvailability(
-              restaurant.resyVenueId!,
-              date,
-              partySize,
-              effectiveAuthToken,
-            );
+          for (const date of dates) {
+            if (booked) break;
 
-            if (!result) continue;
-
-            const slots = parseSlots(
-              result,
-              restaurant.resyVenueId!,
-              restaurant.name,
-              restaurant.resyUrl!,
-              partySize,
-            );
-
-            if (slots.length === 0) continue;
-
-            // Sort slots by preference
-            const scored = slots
-              .filter(s => !failedTokens.has(s.configToken))
-              .map(s => {
-                let score = 1000;
-                if (preferredTimes.length > 0) {
-                  const slotMinutes = parseInt(s.time.split(":")[0]) * 60 + parseInt(s.time.split(":")[1]);
-                  for (let i = 0; i < preferredTimes.length; i++) {
-                    const [ph, pm] = preferredTimes[i].split(":").map(Number);
-                    const prefMinutes = ph * 60 + pm;
-                    const diff = Math.abs(slotMinutes - prefMinutes);
-                    if (diff <= timeRadius) {
-                      score = i * 100 + diff; // Priority order + closeness
-                      break;
-                    }
-                  }
-                } else {
-                  score = 0; // No preference = take anything
-                }
-                return { slot: s, score };
-              })
-              .filter(s => s.score < 1000)
-              .sort((a, b) => a.score - b.score);
-
-            if (scored.length === 0) continue;
-
-            await write({
-              type: "slots_found",
-              restaurant: restaurant.name,
-              count: scored.length,
-              bestTime: scored[0].slot.time,
-            });
-
-            // Try to book the best matching slot
-            for (const { slot } of scored) {
-              const details = await getSlotDetails(
-                effectiveAuthToken,
-                slot.configToken,
+            try {
+              const result = await findAvailability(
+                restaurant.resyVenueId!,
                 date,
+                partySize,
+                effectiveAuthToken,
+              );
+
+              if (!result) continue;
+
+              const slots = parseSlots(
+                result,
+                restaurant.resyVenueId!,
+                restaurant.name,
+                restaurant.resyUrl!,
                 partySize,
               );
 
-              if (!details) {
-                failedTokens.add(slot.configToken);
-                continue;
-              }
+              if (slots.length === 0) continue;
 
-              const bookResult = await bookReservation(
-                effectiveAuthToken,
-                details.bookToken,
-                paymentMethodId,
-              );
+              // Sort slots by preference
+              const scored = slots
+                .filter(s => !failedTokens.has(s.configToken))
+                .map(s => {
+                  let score = 1000;
+                  if (preferredTimes.length > 0) {
+                    const slotMinutes = parseInt(s.time.split(":")[0]) * 60 + parseInt(s.time.split(":")[1]);
+                    for (let i = 0; i < preferredTimes.length; i++) {
+                      const [ph, pm] = preferredTimes[i].split(":").map(Number);
+                      const prefMinutes = ph * 60 + pm;
+                      const diff = Math.abs(slotMinutes - prefMinutes);
+                      if (diff <= timeRadius) {
+                        score = i * 100 + diff;
+                        break;
+                      }
+                    }
+                  } else {
+                    score = 0;
+                  }
+                  return { slot: s, score };
+                })
+                .filter(s => s.score < 1000)
+                .sort((a, b) => a.score - b.score);
 
-              if (bookResult.success) {
-                booked = true;
-                await write({
-                  type: "booked",
-                  restaurant: restaurant.name,
+              if (scored.length === 0) continue;
+
+              await write({
+                type: "slots_found",
+                restaurant: restaurant.name,
+                date,
+                count: scored.length,
+                bestTime: scored[0].slot.time,
+              });
+
+              // Try to book the best matching slot
+              for (const { slot } of scored) {
+                const details = await getSlotDetails(
+                  effectiveAuthToken,
+                  slot.configToken,
                   date,
-                  time: slot.time,
-                  reservationId: bookResult.reservationId,
-                });
-                break;
-              } else {
-                failedTokens.add(slot.configToken);
-                await write({
-                  type: "book_failed",
-                  restaurant: restaurant.name,
-                  time: slot.time,
-                  error: bookResult.error,
-                });
+                  partySize,
+                );
+
+                if (!details) {
+                  failedTokens.add(slot.configToken);
+                  continue;
+                }
+
+                const bookResult = await bookReservation(
+                  effectiveAuthToken,
+                  details.bookToken,
+                  paymentMethodId,
+                );
+
+                if (bookResult.success) {
+                  booked = true;
+                  await write({
+                    type: "booked",
+                    restaurant: restaurant.name,
+                    date,
+                    time: slot.time,
+                    reservationId: bookResult.reservationId,
+                  });
+                  break;
+                } else {
+                  failedTokens.add(slot.configToken);
+                  await write({
+                    type: "book_failed",
+                    restaurant: restaurant.name,
+                    date,
+                    time: slot.time,
+                    error: bookResult.error,
+                  });
+                }
               }
+            } catch (err) {
+              await write({
+                type: "error",
+                restaurant: restaurant.name,
+                date,
+                error: err instanceof Error ? err.message : "Unknown error",
+              });
             }
-          } catch (err) {
-            await write({
-              type: "error",
-              restaurant: restaurant.name,
-              error: err instanceof Error ? err.message : "Unknown error",
-            });
           }
         }
 
@@ -200,6 +214,7 @@ export async function POST(request: Request) {
         booked,
         attempts: attempt,
         elapsed: Date.now() - startTime,
+        datesSearched: dates.length,
       });
 
       await writer.close();
