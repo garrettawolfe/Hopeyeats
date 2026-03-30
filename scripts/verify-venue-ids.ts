@@ -40,6 +40,8 @@ async function validateVenueId(
     venue_id: venueId.toString(),
     day: date,
     party_size: "2",
+    lat: "40.7128",
+    long: "-74.0060",
   });
   const res = await fetch(`https://api.resy.com/4/find?${params}`, {
     headers,

@@ -217,13 +217,13 @@ export async function findAvailability(
     );
   }
 
-  // Use lat=0&long=0 per working resy bots (Alkaar/resy-booking-bot)
+  // Use real NYC coordinates — lat=0&long=0 returns "invalid latitude"
   const params = new URLSearchParams({
     venue_id: venueId.toString(),
     day: date,
     party_size: partySize.toString(),
-    lat: "0",
-    long: "0",
+    lat: "40.7128",
+    long: "-74.0060",
   });
 
   const url = `${RESY_API_BASE}/4/find?${params}`;
