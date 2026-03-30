@@ -210,14 +210,11 @@ export async function findAvailability(
     );
   }
 
-  // Try with lat/long first, then without on 500 (some venues reject randomized coords)
-  const coords = randomizedCoords();
+  // Don't send lat/long — randomized coords cause 400/500 errors from Resy
   const params = new URLSearchParams({
     venue_id: venueId.toString(),
     day: date,
     party_size: partySize.toString(),
-    lat: coords.lat,
-    long: coords.long,
   });
 
   const url = `${RESY_API_BASE}/4/find?${params}`;
@@ -229,18 +226,11 @@ export async function findAvailability(
     headers: buildHeaders(),
   });
 
-  // Only retry on 500 (server error). 400 = bad request, won't fix with retry.
+  // Retry once on 500 (server error) with a brief delay
   if (response.status === 500) {
-    // Retry once without lat/long params
     await randomDelay(300, 800);
-    const noGeoParams = new URLSearchParams({
-      venue_id: venueId.toString(),
-      day: date,
-      party_size: partySize.toString(),
-    });
-    const retryUrl = `${RESY_API_BASE}/4/find?${noGeoParams}`;
     rateLimitState.totalRequests++;
-    response = await fetch(retryUrl, {
+    response = await fetch(url, {
       method: "GET",
       headers: buildHeaders(),
     });
@@ -261,9 +251,9 @@ export async function findAvailability(
   // Handle other errors
   if (!response.ok) {
     rateLimitState.consecutiveErrors++;
-    // Only log once, keep it brief
+    const body = await response.text().catch(() => "");
     console.error(
-      `[Resy] ${response.status} for venue ${venueId} on ${date}`,
+      `[Resy] ${response.status} for venue ${venueId} on ${date}: ${body.slice(0, 200)}`,
     );
     return null;
   }
