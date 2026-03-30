@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { autoBook, getCachedAuth } from "@/lib/resyBooking";
+import { autoBook, autoBookWithRetry, getCachedAuth } from "@/lib/resyBooking";
 
 /**
  * POST /api/resy-book
  * Auto-book a specific slot. Requires prior auth via /api/resy-auth.
  *
  * Body: { configToken, date, partySize, restaurantName, time }
+ *   OR: { slots: [{configToken, date, time}], partySize, restaurantName } for slot pool retry
  */
 export async function POST(request: Request) {
   try {
@@ -24,9 +25,26 @@ export async function POST(request: Request) {
       );
     }
 
-    const { configToken, date, partySize, restaurantName, time } =
-      await request.json();
+    const body = await request.json();
+    const { configToken, date, partySize, restaurantName, time, slots } = body;
 
+    // Slot pool mode: try multiple slots with retry
+    if (slots && Array.isArray(slots) && slots.length > 0) {
+      const result = await autoBookWithRetry(
+        auth.authToken,
+        auth.paymentMethodId,
+        slots,
+        partySize ?? 2,
+        restaurantName ?? "Restaurant",
+      );
+
+      if (!result.success) {
+        return NextResponse.json({ error: result.error, ...result }, { status: 422 });
+      }
+      return NextResponse.json(result);
+    }
+
+    // Single slot mode (backwards compatible)
     if (!configToken || !date) {
       return NextResponse.json(
         { error: "configToken and date are required" },

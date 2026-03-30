@@ -19,6 +19,8 @@ import SettingsDrawer, {
 } from "@/components/SettingsDrawer";
 import RestaurantMonitorCard from "@/components/RestaurantMonitorCard";
 import LoginPage from "@/components/LoginPage";
+import SnipePanel from "@/components/SnipePanel";
+import { ToastProvider, useToast } from "@/components/Toast";
 
 const resyRestaurants = restaurants.filter(
   (r) =>
@@ -83,6 +85,15 @@ function filterSlotsBySettings(slots: AvailabilitySlot[], settings: AppSettings)
 }
 
 export default function Home() {
+  return (
+    <ToastProvider>
+      <HomeInner />
+    </ToastProvider>
+  );
+}
+
+function HomeInner() {
+  const { addToast } = useToast();
   // --- Multi-user profile state ---
   const [profiles, setProfiles] = useState<string[]>([]);
   const [activeProfileName, setActiveProfileName] = useState<string | null>(null);
@@ -118,6 +129,7 @@ export default function Home() {
   const [mealFilter, setMealFilter] = useState<"all" | "dinner" | "bar" | "brunch">("all");
   const [activePartySize, setActivePartySize] = useState<2 | 4>(2);
   const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
+  const [appMode, setAppMode] = useState<"monitor" | "snipe">("monitor");
 
   // Refs for latest values (avoid stale closures)
   const settingsRef = useRef(settings);
@@ -350,13 +362,42 @@ export default function Home() {
         }
       }
 
-      // Auto-book: if any restaurant with autobook enabled has new matching slots, book the first one
+      // Auto-book with slot pool: if any restaurant with autobook enabled has new matching slots, try all of them
       if (currentAuth?.authenticated && !streamIsBaseline && autoBookIds.size > 0 && currentSettings) {
         for (const diff of streamDiffs) {
           if (diff.newSlots.length === 0 || !autoBookIds.has(diff.restaurant.id)) continue;
           const matchingNew = diff.newSlots.filter((s) => slotMatchesFilters(s, currentSettings));
           if (matchingNew.length > 0) {
-            handleBook(matchingNew[0]);
+            // Use slot pool retry — send all matching slots at once
+            const slots = matchingNew.map(s => ({ configToken: s.configToken, date: s.date, time: s.time }));
+            try {
+              const res = await fetch("/api/resy-book", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  slots,
+                  partySize: currentSettings.partySize ?? 2,
+                  restaurantName: diff.restaurant.name,
+                }),
+              });
+              const data = await res.json();
+              const log: BookingLog = {
+                id: `auto-${Date.now()}`,
+                restaurantName: diff.restaurant.name,
+                date: data.date ?? matchingNew[0].date,
+                time: data.time ?? matchingNew[0].time,
+                partySize: currentSettings.partySize ?? 2,
+                status: data.success ? "success" : "failed",
+                error: data.error,
+                timestamp: new Date().toISOString(),
+              };
+              setBookingLog((prev) => [log, ...prev].slice(0, 50));
+              if (data.success) {
+                addToast(`Auto-booked ${diff.restaurant.name} — ${log.date} at ${log.time}`, "success", 8000);
+              }
+            } catch {
+              // Auto-book failed silently
+            }
           }
         }
       }
@@ -410,8 +451,13 @@ export default function Home() {
         error: data.error, timestamp: new Date().toISOString(),
       };
       setBookingLog((prev) => [log, ...prev].slice(0, 50));
+      if (data.success) {
+        addToast(`Booked ${slot.venueName} — ${slot.date} at ${slot.time}`, "success", 8000);
+      } else {
+        addToast(`Booking failed: ${data.error ?? "Unknown error"}`, "error", 6000);
+      }
     } catch {
-      // Booking failed silently
+      addToast(`Booking error for ${slot.venueName}`, "error");
     } finally {
       setBookingInProgress(null);
     }
@@ -763,6 +809,47 @@ export default function Home() {
             >
               Settings
             </button>
+          </div>
+        )}
+
+        {/* Mode Toggle: Monitor vs Snipe */}
+        <div className="flex gap-1 mb-4">
+          {([["monitor", "Availability Monitor"], ["snipe", "Snipe Mode"]] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setAppMode(key)}
+              className={`px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
+                appMode === key
+                  ? key === "snipe" ? "bg-red-600 text-white" : "bg-charcoal text-white"
+                  : "bg-white border border-stone-200 text-stone-500 hover:bg-stone-50"
+              }`}
+            >
+              {key === "snipe" && "⚡ "}{label}
+            </button>
+          ))}
+        </div>
+
+        {/* Snipe Panel (Mode 1) */}
+        {appMode === "snipe" && (
+          <div className="mb-6">
+            <SnipePanel
+              restaurants={resyRestaurants}
+              isAuthenticated={resyAuth?.authenticated ?? false}
+              authToken={resyAuth?.authToken}
+              partySize={settings.partySize ?? 2}
+              onBooked={(event) => {
+                addToast(`Sniped! ${event.restaurant} at ${event.time} on ${event.date}`, "success", 10000);
+                setBookingLog((prev) => [{
+                  id: `snipe-${Date.now()}`,
+                  restaurantName: String(event.restaurant),
+                  date: String(event.date),
+                  time: String(event.time),
+                  partySize: settings.partySize ?? 2,
+                  status: "success" as const,
+                  timestamp: new Date().toISOString(),
+                }, ...prev].slice(0, 50));
+              }}
+            />
           </div>
         )}
 
