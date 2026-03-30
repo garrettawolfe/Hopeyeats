@@ -162,12 +162,13 @@ export async function POST(request: Request) {
     // over multiple cycles. On baseline (first poll), check all.
     const isBaseline = monitorState.pollCount === 0;
 
+    const auth = getCachedAuth();
+    console.log(`[Monitor] Poll #${monitorState.pollCount + 1} | ${monitored.length} restaurants | auth=${!!auth?.authToken} | quiet=${quiet} | baseline=${isBaseline}`);
+
     let pollTargets: MonitoredRestaurant[];
     if (isBaseline) {
-      // First poll: check all restaurants to build initial snapshot
       pollTargets = monitored;
     } else {
-      // Subsequent polls: rotate through a subset
       const start = rotationIndex % monitored.length;
       pollTargets = [];
       for (let i = 0; i < Math.min(RESTAURANTS_PER_POLL, monitored.length); i++) {
@@ -175,6 +176,8 @@ export async function POST(request: Request) {
       }
       rotationIndex = (start + RESTAURANTS_PER_POLL) % monitored.length;
     }
+
+    console.log(`[Monitor] Checking ${pollTargets.length} restaurants: ${pollTargets.map(r => r.name).join(", ")}`);
 
     const batches = batchRestaurants(pollTargets, quiet ? 2 : 3);
     const diffs: SerializableSlotDiff[] = [];
@@ -200,7 +203,6 @@ export async function POST(request: Request) {
           : lookAhead;
         const dates = getForwardDates(effectiveLookAhead);
 
-        const auth = getCachedAuth();
         const slots = await checkVenueAvailability(
           restaurant.resyVenueId,
           restaurant.name,
@@ -248,6 +250,13 @@ export async function POST(request: Request) {
 
     monitorState.pollCount++;
     monitorState.lastPollAt = new Date().toISOString();
+
+    const totalSlots = diffs.reduce((sum, d) => sum + d.totalAvailable, 0);
+    const totalNew = diffs.reduce((sum, d) => sum + d.newSlots.length, 0);
+    const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
+    console.log(
+      `[Monitor] Poll #${monitorState.pollCount} complete in ${elapsed}s | ${diffs.length} restaurants | ${totalSlots} total slots | ${totalNew} new${timedOut ? " | TIMED OUT" : ""}`,
+    );
 
     // ── Send notifications for new slots (skip baseline) ────────────────
     let notifyResult: { sent: string[]; failed: string[] } | undefined;

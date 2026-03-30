@@ -227,6 +227,8 @@ export async function findAvailability(
   });
 
   const url = `${RESY_API_BASE}/4/find?${params}`;
+  const hasAuth = !!authToken;
+  console.log(`[Resy] GET /4/find venue=${venueId} date=${date} party=${partySize} auth=${hasAuth}`);
   rateLimitState.lastRequestAt = Date.now();
   rateLimitState.totalRequests++;
 
@@ -235,14 +237,18 @@ export async function findAvailability(
     headers: buildHeaders(authToken),
   });
 
+  console.log(`[Resy] /4/find venue=${venueId} date=${date} → ${response.status}`);
+
   // Retry once on 500 (server error) with a brief delay
   if (response.status === 500) {
+    console.log(`[Resy] Retrying venue=${venueId} date=${date} after 500...`);
     await randomDelay(300, 800);
     rateLimitState.totalRequests++;
     response = await fetch(url, {
       method: "GET",
       headers: buildHeaders(authToken),
     });
+    console.log(`[Resy] Retry venue=${venueId} date=${date} → ${response.status}`);
   }
 
   // Handle rate limiting with exponential backoff
@@ -252,7 +258,7 @@ export async function findAvailability(
     const backoff = calculateBackoff();
     rateLimitState.backoffUntil = Date.now() + backoff;
     console.warn(
-      `[Resy] 429 Rate Limited (attempt ${rateLimitState.consecutiveErrors}) — backing off ${Math.round(backoff / 1000)}s`,
+      `[Resy] ⚠ 429 Rate Limited (attempt ${rateLimitState.consecutiveErrors}) — backing off ${Math.round(backoff / 1000)}s`,
     );
     return null;
   }
@@ -262,15 +268,18 @@ export async function findAvailability(
     rateLimitState.consecutiveErrors++;
     const body = await response.text().catch(() => "");
     console.error(
-      `[Resy] ${response.status} for venue ${venueId} on ${date}: ${body.slice(0, 200)}`,
+      `[Resy] ✗ ${response.status} for venue ${venueId} on ${date}: ${body.slice(0, 300)}`,
     );
     return null;
   }
 
   // Success — reset consecutive error count
   rateLimitState.consecutiveErrors = 0;
+  const data: ResyFindResponse = await response.json();
+  const slotCount = data.results?.venues?.[0]?.slots?.length ?? 0;
+  console.log(`[Resy] ✓ venue=${venueId} date=${date} → ${slotCount} slots`);
 
-  return response.json();
+  return data;
 }
 
 /**
@@ -469,15 +478,15 @@ export async function checkVenueAvailability(
   );
 
   if (calendarDates.length > 0) {
-    // Calendar worked — only check dates with availability
     datesToCheck = calendarDates;
     console.log(
-      `[Resy] ${venueName}: calendar found ${calendarDates.length}/${dates.length} dates with inventory`,
+      `[Resy] ${venueName} (${venueId}): calendar → ${calendarDates.length}/${dates.length} dates with inventory`,
     );
   } else {
-    // Calendar failed or returned empty — fall back to checking all dates
-    // but cap at 10 to avoid excessive requests
     datesToCheck = dates.slice(0, Math.min(dates.length, 10));
+    console.log(
+      `[Resy] ${venueName} (${venueId}): calendar empty/failed, checking ${datesToCheck.length} dates`,
+    );
   }
 
   // Phase 2: Get detailed slots for available dates
@@ -510,6 +519,10 @@ export async function checkVenueAvailability(
       setTimeout(resolve, jitteredDelay(1500, 0.4)),
     );
   }
+
+  console.log(
+    `[Resy] ${venueName} (${venueId}): done — ${allSlots.length} total slots across ${datesToCheck.length} dates (${rateLimitState.consecutiveErrors} errors)`,
+  );
 
   return allSlots;
 }
