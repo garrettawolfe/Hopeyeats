@@ -8,6 +8,11 @@ export interface DayTimeWindow {
   end: string;   // "21:30"
 }
 
+export interface BlackoutDate {
+  date: string; // YYYY-MM-DD
+  note: string;
+}
+
 export interface AppSettings {
   // Resy credentials
   resyEmail: string;
@@ -17,6 +22,7 @@ export interface AppSettings {
   partySize: number;
   preferredDays: string[];
   dayTimeWindows: Record<string, DayTimeWindow>;
+  blackoutDates: BlackoutDate[];
   // Per-user persistent state
   autoBookIds: string[];
   monitoredIds: string[];
@@ -42,6 +48,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   partySize: 2,
   preferredDays: ["wednesday", "thursday", "friday", "saturday"],
   dayTimeWindows: DEFAULT_DAY_TIME_WINDOWS,
+  blackoutDates: [],
   autoBookIds: [],
   monitoredIds: [],
   notifyEmail: "",
@@ -130,7 +137,65 @@ export function saveSettings(s: AppSettings, profileName?: string): void {
 
 // --- Bookmarklet ---
 
-const BOOKMARKLET_CODE = `javascript:void((function(){try{var t='';var c=document.cookie.split(';').map(function(x){return x.trim()}).find(function(x){return x.startsWith('authToken=')});if(c){t=decodeURIComponent(c.split('=').slice(1).join('='))}if(!t){try{var keys=['authToken','auth_token','resy_auth_token'];for(var i=0;i<keys.length;i++){var v=localStorage.getItem(keys[i])||sessionStorage.getItem(keys[i]);if(v){t=v;break}}}catch(e){}}if(!t){try{var x=new XMLHttpRequest();x.open('GET','https://api.resy.com/2/user',false);x.setRequestHeader('Authorization','ResyAPI api_key="VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5"');x.withCredentials=true;x.send();if(x.status===200){var d=JSON.parse(x.responseText);t=d.token||''}}catch(e){}}if(t){window.prompt('Resy auth token (Cmd+C to copy):',t)}else{alert('Could not find token automatically.\\n\\nManual method:\\n1. Open DevTools (F12)\\n2. Go to Network tab\\n3. Click any page on resy.com\\n4. Find a request to api.resy.com\\n5. Copy the x-resy-auth-token header value')}}catch(e){alert('Error: '+e.message)}})())`;
+const BOOKMARKLET_CODE = `javascript:void((function(){` +
+  /* Step 1: Check cookies with broad patterns */
+  `var t='';try{var cookies=document.cookie.split(';');` +
+  `var patterns=['authtoken','resytoken','_resy_auth','resy_auth','x-resy-auth','auth_token','token'];` +
+  `for(var i=0;i<cookies.length;i++){var c=cookies[i].trim();var cl=c.toLowerCase();` +
+  `for(var j=0;j<patterns.length;j++){if(cl.startsWith(patterns[j]+'=')){` +
+  `t=decodeURIComponent(c.split('=').slice(1).join('='));break}}if(t)break}}catch(e){}` +
+  /* Step 2: Search all localStorage and sessionStorage keys */
+  `if(!t){try{var stores=[localStorage,sessionStorage];` +
+  `for(var s=0;s<stores.length;s++){if(t)break;var store=stores[s];` +
+  `for(var k=0;k<store.length;k++){var key=store.key(k);var kl=key.toLowerCase();` +
+  `if(kl.indexOf('auth')!==-1||kl.indexOf('token')!==-1||kl.indexOf('resy')!==-1){` +
+  `var val=store.getItem(key);if(val){` +
+  /* Try to parse JSON values that might contain a token */
+  `try{var parsed=JSON.parse(val);` +
+  `if(typeof parsed==='string'){t=parsed}` +
+  `else if(parsed.token){t=parsed.token}` +
+  `else if(parsed.authToken){t=parsed.authToken}` +
+  `else if(parsed.auth_token){t=parsed.auth_token}` +
+  `}catch(e){if(val.length>20&&val.length<500&&!/\\s/.test(val)){t=val}}` +
+  `if(t)break}}}}}catch(e){}}` +
+  /* Step 3: Try __NEXT_DATA__ and other global JS objects */
+  `if(!t){try{` +
+  `if(window.__NEXT_DATA__){var nd=JSON.stringify(window.__NEXT_DATA__);` +
+  `var m=nd.match(/"(?:auth_?token|token|x-resy-auth-token)":"([^"]+)"/i);if(m)t=m[1]}` +
+  `}catch(e){}}` +
+  `if(!t){try{` +
+  `var state=null;` +
+  `if(window.__REDUX_STORE__){state=window.__REDUX_STORE__.getState()}` +
+  `else if(window.__store__){state=window.__store__.getState()}` +
+  `else if(window.__NEXT_REDUX_STORE__){state=window.__NEXT_REDUX_STORE__.getState()}` +
+  `if(state){var ss=JSON.stringify(state);` +
+  `var rm=ss.match(/"(?:auth_?token|token)":"([^"]{20,})"/i);if(rm)t=rm[1]}` +
+  `}catch(e){}}` +
+  /* Step 4: Fetch api.resy.com/2/user with credentials */
+  `if(!t){` +
+  `try{fetch('https://api.resy.com/2/user',{method:'GET',credentials:'include',` +
+  `headers:{'Authorization':'ResyAPI api_key="VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5"'}` +
+  `}).then(function(r){if(r.ok)return r.json();throw new Error('not ok')` +
+  `}).then(function(d){` +
+  `var found=d.token||d.auth_token||d.authToken||'';` +
+  `if(found){window.prompt('Resy auth token (Cmd+C / Ctrl+C to copy):',found)}` +
+  `else{showManualPrompt()}` +
+  `}).catch(function(){showManualPrompt()})}catch(e){showManualPrompt()}}` +
+  /* If we already found a token synchronously, show it */
+  `if(t){window.prompt('Resy auth token (Cmd+C / Ctrl+C to copy):',t)}` +
+  /* Step 5: Manual prompt fallback */
+  `function showManualPrompt(){` +
+  `var manual=window.prompt(` +
+  `'Could not find token automatically.\\n\\n'+` +
+  `'To find it manually:\\n'+` +
+  `'1. Open DevTools (F12 or Cmd+Opt+I)\\n'+` +
+  `'2. Go to the Network tab\\n'+` +
+  `'3. Click any link on resy.com\\n'+` +
+  `'4. Find a request to api.resy.com\\n'+` +
+  `'5. Look for the x-resy-auth-token header\\n'+` +
+  `'6. Paste it below:','');` +
+  `if(manual&&manual.trim()){window.prompt('Your token (Cmd+C / Ctrl+C to copy):',manual.trim())}}` +
+  `})())`;
 
 // --- Component ---
 
@@ -174,6 +239,8 @@ export default function SettingsDrawer({
   const [newProfileName, setNewProfileName] = useState("");
   const [showNewProfile, setShowNewProfile] = useState(false);
   const [bookmarkletCopied, setBookmarkletCopied] = useState(false);
+  const [newBlackoutDate, setNewBlackoutDate] = useState("");
+  const [newBlackoutNote, setNewBlackoutNote] = useState("");
 
   useEffect(() => {
     setLocal(settings);
@@ -510,6 +577,58 @@ export default function SettingsDrawer({
                     );
                   })}
                 </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Blackout Dates */}
+          <section className="mb-6">
+            <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider mb-2">Blackout Dates</h3>
+            <p className="text-[10px] text-stone-400 mb-2">Dates to skip for auto-book and notifications</p>
+            <div className="space-y-2">
+              {(local.blackoutDates ?? []).map((bd, i) => (
+                <div key={i} className="flex items-center gap-2 bg-stone-50 rounded-lg px-2.5 py-1.5">
+                  <span className="text-xs font-medium text-charcoal">{bd.date}</span>
+                  {bd.note && <span className="text-[10px] text-stone-400 truncate flex-1">{bd.note}</span>}
+                  <button
+                    onClick={() => {
+                      const dates = (local.blackoutDates ?? []).filter((_, j) => j !== i);
+                      update({ blackoutDates: dates });
+                    }}
+                    className="text-stone-300 hover:text-red-400 shrink-0"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+              <div className="flex gap-1.5">
+                <input
+                  type="date"
+                  value={newBlackoutDate}
+                  onChange={(e) => setNewBlackoutDate(e.target.value)}
+                  className="flex-1 px-2 py-1.5 border border-stone-200 rounded-lg text-xs"
+                />
+                <input
+                  type="text"
+                  placeholder="Note (optional)"
+                  value={newBlackoutNote}
+                  onChange={(e) => setNewBlackoutNote(e.target.value)}
+                  className="flex-1 px-2 py-1.5 border border-stone-200 rounded-lg text-xs"
+                />
+                <button
+                  onClick={() => {
+                    if (!newBlackoutDate) return;
+                    const dates = [...(local.blackoutDates ?? []), { date: newBlackoutDate, note: newBlackoutNote }];
+                    update({ blackoutDates: dates });
+                    setNewBlackoutDate("");
+                    setNewBlackoutNote("");
+                  }}
+                  className="px-2.5 py-1.5 bg-charcoal text-white rounded-lg text-xs font-medium hover:bg-charcoal/80"
+                >
+                  Add
+                </button>
               </div>
             </div>
           </section>

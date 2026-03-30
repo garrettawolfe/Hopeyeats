@@ -57,7 +57,13 @@ function timeAgo(iso: string): string {
 const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
 function slotMatchesFilters(slot: AvailabilitySlot, settings: AppSettings): boolean {
-  const { preferredDays, dayTimeWindows } = settings;
+  const { preferredDays, dayTimeWindows, blackoutDates } = settings;
+
+  // Check blackout dates
+  if (blackoutDates?.length > 0 && blackoutDates.some((bd) => bd.date === slot.date)) {
+    return false;
+  }
+
   if (preferredDays.length === 0) return true;
 
   const d = new Date(slot.date + "T12:00:00");
@@ -113,6 +119,10 @@ export default function Home() {
   const [activePartySize, setActivePartySize] = useState<2 | 4>(2);
   const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
 
+  // Refs for latest values (avoid stale closures)
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+
   // --- Initialize profiles on mount ---
   useEffect(() => {
     let profs = getProfiles();
@@ -147,11 +157,12 @@ export default function Home() {
 
   // --- Persist autoBookIds and monitoredIds to settings ---
   const persistUserState = useCallback((monitored: Set<string>, autoBook: Set<string>) => {
-    if (!settings || !activeProfileName) return;
-    const next = { ...settings, monitoredIds: Array.from(monitored), autoBookIds: Array.from(autoBook) };
+    const currentSettings = settingsRef.current;
+    if (!currentSettings || !activeProfileName) return;
+    const next = { ...currentSettings, monitoredIds: Array.from(monitored), autoBookIds: Array.from(autoBook) };
     setSettings(next);
     saveSettings(next);
-  }, [settings, activeProfileName]);
+  }, [activeProfileName]);
 
   // --- Auth restore ---
   const authRestoreAttempted = useRef(false);
@@ -177,10 +188,8 @@ export default function Home() {
         })
         .catch(() => setResyAuth({ authenticated: false }));
     } else {
-      fetch("/api/resy-auth")
-        .then((r) => r.json())
-        .then(setResyAuth)
-        .catch(() => setResyAuth({ authenticated: false }));
+      // No saved token — mark as unauthenticated without hitting the server
+      setResyAuth({ authenticated: false });
     }
   }, [settings]);
 
@@ -209,8 +218,6 @@ export default function Home() {
   const pollInFlight = useRef(false);
   const resyAuthRef = useRef(resyAuth);
   resyAuthRef.current = resyAuth;
-  const settingsRef = useRef(settings);
-  settingsRef.current = settings;
 
   const poll = useCallback(async () => {
     if (monitoredIds.size === 0) return;

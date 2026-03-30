@@ -78,7 +78,6 @@ export async function setAuthFromToken(
     }
 
     const data = await response.json();
-    console.log("[ResyAuth] Token validated, user keys:", Object.keys(data));
 
     const result: ResyAuthTokens = {
       authToken,

@@ -28,7 +28,7 @@ let monitorState: MonitorState = createMonitorState();
 const venueIdCache = new Map<string, number>();
 let notificationConfig: NotificationConfig = {};
 let rotationIndex = 0;
-const RESTAURANTS_PER_POLL = 8;
+const RESTAURANTS_PER_POLL = 16;
 
 /** Delay helper */
 function delay(ms: number): Promise<void> {
