@@ -1,4 +1,3 @@
-import { NextResponse } from "next/server";
 import { restaurants } from "@/data/restaurants";
 import {
   checkVenueAvailability,
@@ -50,15 +49,13 @@ function batchDelay(): Promise<void> {
  * POST /api/resy-monitor
  *
  * Poll selected restaurants for availability changes.
+ * Returns a newline-delimited JSON stream so the client can update incrementally.
  *
- * Body: {
- *   restaurantIds?: string[]  — which restaurants to check (default: all with venueId)
- *   partySize?: number        — party size filter (default: 2)
- *   daysAhead?: number        — how many days forward to scan (overrides per-restaurant advanceDays)
- *   reset?: boolean           — reset monitor state (clear baseline)
- *   resolveIds?: boolean      — attempt to resolve missing venue IDs via Resy API
- *   notifications?: NotificationConfig — configure notification channels
- * }
+ * Stream events:
+ *   { type: "progress", restaurant: string, index: number, total: number }
+ *   { type: "result", diff: SerializableSlotDiff }
+ *   { type: "cached", diff: SerializableSlotDiff }
+ *   { type: "done", pollResult: MonitorPollResult }
  */
 export async function POST(request: Request) {
   try {
@@ -87,7 +84,10 @@ export async function POST(request: Request) {
     if (reset) {
       monitorState = createMonitorState();
       venueIdCache.clear();
-      return NextResponse.json({ message: "Monitor state reset.", pollCount: 0 });
+      return new Response(
+        JSON.stringify({ type: "done", pollResult: { message: "Monitor state reset.", pollCount: 0 } }) + "\n",
+        { headers: { "Content-Type": "application/x-ndjson" } },
+      );
     }
 
     // ── Resolve missing venue IDs if requested ──────────────────────────
@@ -109,7 +109,6 @@ export async function POST(request: Request) {
           console.log(`[Monitor] Resolved ${r.name} → venue ID ${venueId}`);
         }
 
-        // Delay between resolution requests
         await new Promise((resolve) =>
           setTimeout(resolve, 1000 + Math.random() * 2000),
         );
@@ -125,7 +124,6 @@ export async function POST(request: Request) {
       )
       .map((r) => ({
         ...r,
-        // Use cached venue ID if the static one is null
         effectiveVenueId: r.resyVenueId ?? venueIdCache.get(r.id) ?? null,
       }))
       .filter((r) => r.effectiveVenueId !== null);
@@ -135,13 +133,15 @@ export async function POST(request: Request) {
       : monitorable;
 
     if (targets.length === 0) {
-      return NextResponse.json(
-        {
-          error:
-            "No monitorable restaurants found. Try enabling 'Resolve IDs' to discover venue IDs.",
-          monitorableCount: 0,
-        },
-        { status: 400 },
+      return new Response(
+        JSON.stringify({
+          type: "done",
+          pollResult: {
+            error: "No monitorable restaurants found.",
+            monitorableCount: 0,
+          },
+        }) + "\n",
+        { status: 400, headers: { "Content-Type": "application/x-ndjson" } },
       );
     }
 
@@ -158,8 +158,6 @@ export async function POST(request: Request) {
     }));
 
     // ── Rotate restaurants: check a subset per poll ───────────────────────
-    // This keeps each poll fast (~10-20s) while covering all restaurants
-    // over multiple cycles. On baseline (first poll), check all.
     const isBaseline = monitorState.pollCount === 0;
 
     const auth = getCachedAuth();
@@ -179,121 +177,158 @@ export async function POST(request: Request) {
 
     console.log(`[Monitor] Checking ${pollTargets.length} restaurants: ${pollTargets.map(r => r.name).join(", ")}`);
 
-    const batches = batchRestaurants(pollTargets, quiet ? 2 : 3);
-    const diffs: SerializableSlotDiff[] = [];
+    // ── Stream response ─────────────────────────────────────────────────
+    const encoder = new TextEncoder();
+    const stream = new TransformStream();
+    const writer = stream.writable.getWriter();
 
-    // Time budget: stop processing after 60s to avoid timeouts
-    const pollStart = Date.now();
-    const TIME_BUDGET_MS = 60_000;
-    let timedOut = false;
+    const write = async (data: unknown) => {
+      await writer.write(encoder.encode(JSON.stringify(data) + "\n"));
+    };
 
-    for (const batch of batches) {
-      if (timedOut) break;
+    // Process in background, streaming results
+    const processAsync = async () => {
+      const batches = batchRestaurants(pollTargets, quiet ? 2 : 3);
+      const diffs: SerializableSlotDiff[] = [];
+      const pollStart = Date.now();
+      const TIME_BUDGET_MS = 60_000;
+      let timedOut = false;
+      let processedCount = 0;
 
-      for (const restaurant of batch) {
-        if (Date.now() - pollStart > TIME_BUDGET_MS) {
-          console.warn(`[Monitor] Time budget exceeded after ${diffs.length}/${pollTargets.length} restaurants`);
-          timedOut = true;
-          break;
+      for (const batch of batches) {
+        if (timedOut) break;
+
+        for (const restaurant of batch) {
+          if (Date.now() - pollStart > TIME_BUDGET_MS) {
+            console.warn(`[Monitor] Time budget exceeded after ${diffs.length}/${pollTargets.length} restaurants`);
+            timedOut = true;
+            break;
+          }
+
+          // Send progress event
+          await write({
+            type: "progress",
+            restaurant: restaurant.name,
+            index: processedCount,
+            total: pollTargets.length,
+          });
+
+          const lookAhead = daysAhead ?? Math.min(restaurant.advanceDays, 14);
+          const effectiveLookAhead = quiet ? Math.min(lookAhead, 7) : lookAhead;
+          const dates = getForwardDates(effectiveLookAhead);
+
+          const slots = await checkVenueAvailability(
+            restaurant.resyVenueId,
+            restaurant.name,
+            restaurant.resyUrl,
+            dates,
+            partySize,
+            auth?.authToken,
+          );
+
+          const diff = updateSnapshot(monitorState, restaurant, slots);
+          const serialized: SerializableSlotDiff = {
+            restaurant: diff.restaurant,
+            currentSlots: slots,
+            newSlots: diff.newSlots,
+            droppedSlots: diff.droppedSlots,
+            totalAvailable: diff.totalAvailable,
+            checkedAt: diff.checkedAt,
+          };
+          diffs.push(serialized);
+          processedCount++;
+
+          // Stream this restaurant's result immediately
+          await write({ type: "result", diff: serialized });
         }
 
-        const lookAhead = daysAhead ?? Math.min(restaurant.advanceDays, 14);
-        const effectiveLookAhead = quiet
-          ? Math.min(lookAhead, 7)
-          : lookAhead;
-        const dates = getForwardDates(effectiveLookAhead);
-
-        const slots = await checkVenueAvailability(
-          restaurant.resyVenueId,
-          restaurant.name,
-          restaurant.resyUrl,
-          dates,
-          partySize,
-          auth?.authToken,
-        );
-
-        const diff = updateSnapshot(monitorState, restaurant, slots);
-        diffs.push({
-          restaurant: diff.restaurant,
-          currentSlots: slots,
-          newSlots: diff.newSlots,
-          droppedSlots: diff.droppedSlots,
-          totalAvailable: diff.totalAvailable,
-          checkedAt: diff.checkedAt,
-        });
+        if (batches.indexOf(batch) < batches.length - 1 && !timedOut) {
+          await batchDelay();
+        }
       }
 
-      if (batches.indexOf(batch) < batches.length - 1 && !timedOut) {
-        await batchDelay();
-      }
-    }
-
-    // Include cached slots for restaurants NOT checked this poll
-    {
+      // Include cached slots for restaurants NOT checked this poll
       const checkedIds = new Set(diffs.map((d) => d.restaurant.id));
       for (const restaurant of monitored) {
         if (checkedIds.has(restaurant.id)) continue;
         const snapshot = monitorState.snapshots.get(restaurant.id);
         if (snapshot) {
           const cachedSlots = Array.from(snapshot.slots.values());
-          diffs.push({
+          const cachedDiff: SerializableSlotDiff = {
             restaurant,
             currentSlots: cachedSlots,
             newSlots: [],
             droppedSlots: [],
             totalAvailable: cachedSlots.length,
             checkedAt: snapshot.checkedAt,
-          });
+          };
+          diffs.push(cachedDiff);
+          await write({ type: "cached", diff: cachedDiff });
         }
       }
-    }
 
-    monitorState.pollCount++;
-    monitorState.lastPollAt = new Date().toISOString();
+      monitorState.pollCount++;
+      monitorState.lastPollAt = new Date().toISOString();
 
-    const totalSlots = diffs.reduce((sum, d) => sum + d.totalAvailable, 0);
-    const totalNew = diffs.reduce((sum, d) => sum + d.newSlots.length, 0);
-    const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
-    console.log(
-      `[Monitor] Poll #${monitorState.pollCount} complete in ${elapsed}s | ${diffs.length} restaurants | ${totalSlots} total slots | ${totalNew} new${timedOut ? " | TIMED OUT" : ""}`,
-    );
+      const totalSlots = diffs.reduce((sum, d) => sum + d.totalAvailable, 0);
+      const totalNew = diffs.reduce((sum, d) => sum + d.newSlots.length, 0);
+      const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
+      console.log(
+        `[Monitor] Poll #${monitorState.pollCount} complete in ${elapsed}s | ${diffs.length} restaurants | ${totalSlots} total slots | ${totalNew} new${timedOut ? " | TIMED OUT" : ""}`,
+      );
 
-    // ── Send notifications for new slots (skip baseline) ────────────────
-    let notifyResult: { sent: string[]; failed: string[] } | undefined;
-    if (!isBaseline) {
-      const alerts = diffs
-        .filter((d) => d.newSlots.length > 0)
-        .map((d) => ({ restaurant: d.restaurant, newSlots: d.newSlots }));
+      // ── Send notifications for new slots (skip baseline) ────────────
+      let notifyResult: { sent: string[]; failed: string[] } | undefined;
+      if (!isBaseline) {
+        const alerts = diffs
+          .filter((d) => d.newSlots.length > 0)
+          .map((d) => ({ restaurant: d.restaurant, newSlots: d.newSlots }));
 
-      if (alerts.length > 0) {
-        // Derive base URL from the request
-        const url = new URL(request.url);
-        const baseUrl = `${url.protocol}//${url.host}`;
-        notifyResult = await sendNotifications(
-          notificationConfig,
-          alerts,
-          baseUrl,
-        );
+        if (alerts.length > 0) {
+          const url = new URL(request.url);
+          const baseUrl = `${url.protocol}//${url.host}`;
+          notifyResult = await sendNotifications(notificationConfig, alerts, baseUrl);
+        }
       }
-    }
 
-    const result: MonitorPollResult = {
-      diffs,
-      pollCount: monitorState.pollCount,
-      lastPollAt: monitorState.lastPollAt,
-      isBaseline,
-      summary: formatPollSummary(diffs, isBaseline),
-      rateLimitStats: getRateLimitStats(),
-      notificationsSent: notifyResult?.sent,
-      notificationsFailed: notifyResult?.failed,
+      const result: MonitorPollResult = {
+        diffs,
+        pollCount: monitorState.pollCount,
+        lastPollAt: monitorState.lastPollAt,
+        isBaseline,
+        summary: formatPollSummary(diffs, isBaseline),
+        rateLimitStats: getRateLimitStats(),
+        notificationsSent: notifyResult?.sent,
+        notificationsFailed: notifyResult?.failed,
+      };
+
+      await write({ type: "done", pollResult: result });
+      await writer.close();
     };
 
-    return NextResponse.json(result);
+    // Kick off processing (don't await — the stream handles it)
+    processAsync().catch(async (err) => {
+      console.error("[Monitor] Stream error:", err);
+      try {
+        await write({ type: "error", error: err instanceof Error ? err.message : "Unknown error" });
+        await writer.close();
+      } catch {
+        // Writer may already be closed
+      }
+    });
+
+    return new Response(stream.readable, {
+      headers: {
+        "Content-Type": "application/x-ndjson",
+        "Transfer-Encoding": "chunked",
+        "Cache-Control": "no-cache",
+      },
+    });
   } catch (err) {
     console.error("[Monitor] Poll error:", err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Unknown error" },
-      { status: 500 },
+    return new Response(
+      JSON.stringify({ type: "error", error: err instanceof Error ? err.message : "Unknown error" }) + "\n",
+      { status: 500, headers: { "Content-Type": "application/x-ndjson" } },
     );
   }
 }
@@ -304,6 +339,8 @@ export async function POST(request: Request) {
  * Return current monitor status, recent diffs, and rate limit info.
  */
 export async function GET() {
+  const { NextResponse } = await import("next/server");
+
   const recentDiffs = monitorState.diffs.slice(0, 30).map((d) => ({
     restaurant: d.restaurant,
     newSlots: d.newSlots,

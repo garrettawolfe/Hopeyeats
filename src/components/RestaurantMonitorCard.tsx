@@ -89,16 +89,24 @@ export default function RestaurantMonitorCard({
             )}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            {/* Auto-book toggle (per restaurant) */}
-            {isAuthenticated && isMonitored && (
+            {/* Auto-book toggle (per restaurant) — always visible when monitored */}
+            {isMonitored && (
               <button
-                onClick={() => onToggleAutoBook(restaurant.id)}
+                onClick={() => isAuthenticated ? onToggleAutoBook(restaurant.id) : undefined}
                 className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
-                  autoBookEnabled
-                    ? "bg-emerald-500 text-white"
-                    : "bg-stone-100 text-stone-400 hover:bg-stone-200"
+                  !isAuthenticated
+                    ? "bg-stone-100 text-stone-300 cursor-not-allowed"
+                    : autoBookEnabled
+                      ? "bg-emerald-500 text-white"
+                      : "bg-stone-100 text-stone-400 hover:bg-stone-200"
                 }`}
-                title={autoBookEnabled ? "Auto-book ON — click to disable" : "Enable auto-book for this restaurant"}
+                title={
+                  !isAuthenticated
+                    ? "Connect Resy account to enable auto-book"
+                    : autoBookEnabled
+                      ? "Auto-book ON — click to disable"
+                      : "Enable auto-book for this restaurant"
+                }
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />

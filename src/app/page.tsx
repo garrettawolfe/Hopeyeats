@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { restaurants } from "@/data/restaurants";
 import type { AvailabilitySlot } from "@/lib/resyApi";
 import type { MonitorPollResult } from "@/lib/resyMonitor";
+import type { SerializableSlotDiff } from "@/lib/resyMonitor";
 import type { NotificationConfig } from "@/lib/notifications";
 import { buildSmsEmail } from "@/lib/notifications";
 import SettingsDrawer, {
@@ -40,6 +41,33 @@ function timeAgo(iso: string): string {
   return `${Math.floor(minutes / 60)}h ago`;
 }
 
+/** Map day-of-week number (0=Sun) to lowercase day name */
+const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
+/** Filter slots by preferred days and time window from settings */
+function filterSlotsBySettings(
+  slots: AvailabilitySlot[],
+  settings: AppSettings,
+): AvailabilitySlot[] {
+  const { preferredDays, timeWindowStart, timeWindowEnd } = settings;
+  if (preferredDays.length === 0 && !timeWindowStart && !timeWindowEnd) return slots;
+
+  return slots.filter((slot) => {
+    // Filter by day of week
+    if (preferredDays.length > 0) {
+      const d = new Date(slot.date + "T12:00:00");
+      const dayName = DAY_NAMES[d.getDay()];
+      if (!preferredDays.includes(dayName)) return false;
+    }
+
+    // Filter by time window
+    if (timeWindowStart && slot.time < timeWindowStart) return false;
+    if (timeWindowEnd && slot.time > timeWindowEnd) return false;
+
+    return true;
+  });
+}
+
 export default function Home() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -61,6 +89,13 @@ export default function Home() {
   const [lastPollTime, setLastPollTime] = useState<string | null>(null);
   const [, setTick] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Scan progress
+  const [scanProgress, setScanProgress] = useState<{
+    restaurant: string;
+    index: number;
+    total: number;
+  } | null>(null);
 
   // Per-restaurant auto-book
   const [autoBookIds, setAutoBookIds] = useState<Set<string>>(new Set());
@@ -121,18 +156,18 @@ export default function Home() {
     return config;
   }, [settings]);
 
-  // Prevent concurrent polls (React StrictMode can trigger double-mount)
+  // Prevent concurrent polls
   const pollInFlight = useRef(false);
 
-  // Poll function
+  // Poll function — reads NDJSON stream for incremental updates
   const poll = useCallback(async () => {
     if (monitoredIds.size === 0) return;
     if (pollInFlight.current) return;
     pollInFlight.current = true;
     setIsPolling(true);
+    setScanProgress(null);
 
     try {
-      // Abort if the poll takes longer than 120s
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120_000);
 
@@ -150,57 +185,91 @@ export default function Home() {
 
       clearTimeout(timeout);
 
-      if (!res.ok) return;
+      if (!res.ok || !res.body) return;
 
-      const result: MonitorPollResult = await res.json();
-      const now = new Date().toISOString();
+      // Read NDJSON stream
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const streamNewIds = new Set<string>();
+      let streamIsBaseline = true;
 
-      setLatestResult(result);
-      setLastPollTime(now);
-      setPollCount((c) => c + 1);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      // Update per-restaurant slot maps with FULL current availability
-      const nextSlots = new Map<string, AvailabilitySlot[]>();
-      const nextNewIds = new Set<string>();
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? ""; // Keep incomplete line in buffer
 
-      for (const diff of result.diffs) {
-        // Use currentSlots (all available slots), not just newSlots (changes)
-        nextSlots.set(diff.restaurant.id, diff.currentSlots ?? []);
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line);
 
-        // Track genuinely new slots for highlighting
-        if (diff.newSlots.length > 0 && !result.isBaseline) {
-          for (const slot of diff.newSlots) {
-            nextNewIds.add(slot.id);
+            if (event.type === "progress") {
+              setScanProgress({
+                restaurant: event.restaurant,
+                index: event.index,
+                total: event.total,
+              });
+            } else if (event.type === "result" || event.type === "cached") {
+              const diff: SerializableSlotDiff = event.diff;
+              // Update slots for this restaurant immediately
+              setAllSlots((prev) => {
+                const next = new Map(prev);
+                next.set(diff.restaurant.id, diff.currentSlots ?? []);
+                return next;
+              });
+
+              // Track new slot IDs
+              if (diff.newSlots.length > 0) {
+                for (const slot of diff.newSlots) {
+                  streamNewIds.add(slot.id);
+                }
+                setNewSlotIds(new Set(streamNewIds));
+              }
+            } else if (event.type === "done") {
+              const result: MonitorPollResult = event.pollResult;
+              streamIsBaseline = result.isBaseline;
+              setLatestResult(result);
+              setLastPollTime(new Date().toISOString());
+              setPollCount((c) => c + 1);
+
+              // Clear new IDs on baseline
+              if (result.isBaseline) {
+                setNewSlotIds(new Set());
+              }
+
+              // Browser notification
+              if (!result.isBaseline) {
+                const totalNew = result.diffs.reduce((sum, d) => sum + d.newSlots.length, 0);
+                if (totalNew > 0 && typeof Notification !== "undefined" && Notification.permission === "granted") {
+                  new Notification("New Resy Reservations!", {
+                    body: `${totalNew} new slot${totalNew !== 1 ? "s" : ""} found`,
+                    tag: "hopeyeats",
+                  });
+                }
+              }
+            }
+          } catch {
+            // Skip malformed lines
           }
         }
       }
 
-      setAllSlots(nextSlots);
-      setNewSlotIds(nextNewIds);
-
-      // Auto-book new slots for restaurants with per-restaurant auto-book ON
+      // Auto-book after stream completes
       if (
         resyAuth?.authenticated &&
-        !result.isBaseline &&
-        autoBookIds.size > 0
+        !streamIsBaseline &&
+        autoBookIds.size > 0 &&
+        latestResult
       ) {
-        for (const diff of result.diffs) {
+        for (const diff of latestResult.diffs) {
           if (diff.newSlots.length > 0 && autoBookIds.has(diff.restaurant.id)) {
-            // Book the first matching slot at this restaurant
             const slot = diff.newSlots[0];
             handleBook(slot);
           }
-        }
-      }
-
-      // Browser notification
-      if (!result.isBaseline) {
-        const totalNew = result.diffs.reduce((sum, d) => sum + d.newSlots.length, 0);
-        if (totalNew > 0 && typeof Notification !== "undefined" && Notification.permission === "granted") {
-          new Notification("New Resy Reservations!", {
-            body: `${totalNew} new slot${totalNew !== 1 ? "s" : ""} found`,
-            tag: "hopeyeats",
-          });
         }
       }
     } catch (err) {
@@ -211,6 +280,7 @@ export default function Home() {
       }
     } finally {
       setIsPolling(false);
+      setScanProgress(null);
       pollInFlight.current = false;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -229,7 +299,7 @@ export default function Home() {
     poll();
 
     // Set up interval with jitter
-    const baseInterval = 60_000; // 60 seconds
+    const baseInterval = 60_000;
     const jitter = baseInterval * (0.85 + Math.random() * 0.3);
     intervalRef.current = setInterval(poll, jitter);
 
@@ -237,7 +307,7 @@ export default function Home() {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings !== null]); // Only run once settings are loaded
+  }, [settings !== null]);
 
   // Book a slot
   const handleBook = async (slot: AvailabilitySlot) => {
@@ -280,7 +350,6 @@ export default function Home() {
       const next = new Set(prev);
       if (next.has(id)) {
         next.delete(id);
-        // Also disable auto-book when unmonitoring
         setAutoBookIds((ab) => {
           const nextAb = new Set(ab);
           nextAb.delete(id);
@@ -331,9 +400,19 @@ export default function Home() {
     setResyAuth({ authenticated: false });
   };
 
-  // Filter & sort restaurants
+  // Filter & sort restaurants — apply day/time filter to slot counts
+  const getFilteredSlots = useCallback(
+    (restaurantId: string): AvailabilitySlot[] => {
+      const raw = allSlots.get(restaurantId) ?? [];
+      if (!settings) return raw;
+      return filterSlotsBySettings(raw, settings);
+    },
+    [allSlots, settings],
+  );
+
   const filtered = resyRestaurants.filter((r) => {
-    if (filterMode === "available" && (allSlots.get(r.id)?.length ?? 0) === 0) return false;
+    const filteredSlotCount = getFilteredSlots(r.id).length;
+    if (filterMode === "available" && filteredSlotCount === 0) return false;
     if (filterMode === "monitored" && !monitoredIds.has(r.id)) return false;
 
     if (search) {
@@ -349,20 +428,20 @@ export default function Home() {
 
   // Sort: available first, then monitored, then rest
   const sorted = [...filtered].sort((a, b) => {
-    const aSlots = allSlots.get(a.id)?.length ?? 0;
-    const bSlots = allSlots.get(b.id)?.length ?? 0;
+    const aSlots = getFilteredSlots(a.id).length;
+    const bSlots = getFilteredSlots(b.id).length;
     if (aSlots > 0 && bSlots === 0) return -1;
     if (bSlots > 0 && aSlots === 0) return 1;
     return a.name.localeCompare(b.name);
   });
 
-  const totalSlots = Array.from(allSlots.values()).reduce(
-    (sum, slots) => sum + slots.length,
+  const totalSlots = resyRestaurants.reduce(
+    (sum, r) => sum + getFilteredSlots(r.id).length,
     0,
   );
   const totalNewSlots = newSlotIds.size;
 
-  if (!settings) return null; // Loading
+  if (!settings) return null;
 
   return (
     <div className="min-h-screen bg-cream">
@@ -389,7 +468,9 @@ export default function Home() {
                   }`}
                 />
                 {isPolling
-                  ? "Scanning..."
+                  ? scanProgress
+                    ? `Scanning ${scanProgress.restaurant}...`
+                    : "Scanning..."
                   : lastPollTime
                     ? `Poll #${pollCount} · ${timeAgo(lastPollTime)}`
                     : "Starting..."}
@@ -430,6 +511,34 @@ export default function Home() {
             </div>
           </div>
         </div>
+
+        {/* Scan progress bar */}
+        {isPolling && scanProgress && (
+          <div className="bg-charcoal/90 border-t border-stone-700">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2">
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-stone-300">
+                      Scanning <strong className="text-white">{scanProgress.restaurant}</strong>
+                    </span>
+                    <span className="text-stone-400">
+                      {scanProgress.index + 1}/{scanProgress.total}
+                    </span>
+                  </div>
+                  <div className="h-1 bg-stone-700 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gold rounded-full transition-all duration-500"
+                      style={{
+                        width: `${((scanProgress.index + 1) / scanProgress.total) * 100}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -569,15 +678,15 @@ export default function Home() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {sorted.map((r) => {
-              // Find last check time from latest result
               const diff = latestResult?.diffs.find(
                 (d) => d.restaurant.id === r.id,
               );
+              const filteredSlots = getFilteredSlots(r.id);
               return (
                 <RestaurantMonitorCard
                   key={r.id}
                   restaurant={r}
-                  slots={allSlots.get(r.id) ?? []}
+                  slots={filteredSlots}
                   newSlotIds={newSlotIds}
                   isMonitored={monitoredIds.has(r.id)}
                   autoBookEnabled={autoBookIds.has(r.id)}

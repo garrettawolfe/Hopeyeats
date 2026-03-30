@@ -21,15 +21,18 @@ export async function POST(request: Request) {
       );
     }
 
+    console.log(`[Auth] Attempting login for ${email}...`);
     const auth = await resyLogin(email, password);
     if (!auth) {
+      console.error(`[Auth] Login returned null for ${email}`);
       return NextResponse.json(
-        { error: "Login failed — could not connect to Resy" },
+        { error: "Login failed — Resy did not return an auth token. Check your credentials." },
         { status: 401 },
       );
     }
 
     if ("error" in auth) {
+      console.error(`[Auth] Login error for ${email}:`, auth.error);
       return NextResponse.json(
         { error: auth.error },
         { status: 401 },
