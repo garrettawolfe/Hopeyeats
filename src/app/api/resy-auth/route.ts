@@ -33,6 +33,7 @@ export async function POST(request: Request) {
         lastName: result.lastName,
         email: result.email,
         hasPaymentMethod: result.paymentMethodId !== null,
+        authToken: authToken, // Return token so client can send it with polls
       });
     }
 
@@ -66,6 +67,7 @@ export async function POST(request: Request) {
       lastName: auth.lastName,
       email: auth.email,
       hasPaymentMethod: auth.paymentMethodId !== null,
+      authToken: auth.authToken,
     });
   } catch (err) {
     console.error("[Auth] Error:", err);

@@ -51,6 +51,7 @@ export async function POST(request: Request) {
       reset = false,
       resolveIds = false,
       notifications,
+      authToken,
     } = body as {
       restaurantIds?: string[];
       partySize?: number;
@@ -58,6 +59,7 @@ export async function POST(request: Request) {
       reset?: boolean;
       resolveIds?: boolean;
       notifications?: NotificationConfig;
+      authToken?: string;
     };
 
     if (notifications) notificationConfig = notifications;
@@ -115,7 +117,9 @@ export async function POST(request: Request) {
     }));
 
     const isBaseline = monitorState.pollCount === 0;
-    const auth = getCachedAuth();
+
+    // Use token from request body (client sends it) or fall back to server cache
+    const auth = authToken ? { authToken } : getCachedAuth();
 
     // Rotation: subset per poll (all on baseline)
     let pollTargets: MonitoredRestaurant[];

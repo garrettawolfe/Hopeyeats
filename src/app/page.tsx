@@ -76,6 +76,7 @@ export default function Home() {
     authenticated: boolean;
     firstName?: string;
     lastName?: string;
+    authToken?: string;
   } | null>(null);
 
   const [monitoredIds, setMonitoredIds] = useState<Set<string>>(
@@ -170,6 +171,7 @@ export default function Home() {
           partySize: settings?.partySize ?? 2,
           resolveIds: true,
           notifications: buildNotificationConfig(),
+          authToken: resyAuth?.authToken,
         }),
         signal: controller.signal,
       });
