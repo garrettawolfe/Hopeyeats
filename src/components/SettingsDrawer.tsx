@@ -3,6 +3,11 @@
 import { useState, useEffect } from "react";
 import { SMS_GATEWAYS } from "@/lib/notifications";
 
+export interface DayTimeWindow {
+  start: string; // "18:30"
+  end: string;   // "21:30"
+}
+
 export interface AppSettings {
   // Resy credentials
   resyEmail: string;
@@ -12,6 +17,9 @@ export interface AppSettings {
   // Dining preferences
   partySize: number;
   preferredDays: string[];
+  // Per-day time windows (key = day name like "wednesday")
+  dayTimeWindows: Record<string, DayTimeWindow>;
+  // Legacy single window (kept for migration, unused if dayTimeWindows set)
   timeWindowStart: string;
   timeWindowEnd: string;
   // Notification
@@ -22,14 +30,22 @@ export interface AppSettings {
   smsCarrier: string;
 }
 
+export const DEFAULT_DAY_TIME_WINDOWS: Record<string, DayTimeWindow> = {
+  wednesday: { start: "18:30", end: "20:30" },
+  thursday: { start: "18:30", end: "21:30" },
+  friday: { start: "19:30", end: "21:30" },
+  saturday: { start: "19:30", end: "21:30" },
+};
+
 const DEFAULT_SETTINGS: AppSettings = {
   resyEmail: "",
   resyPassword: "",
   resyAuthToken: "",
   partySize: 2,
   preferredDays: ["wednesday", "thursday", "friday", "saturday"],
-  timeWindowStart: "18:00",
-  timeWindowEnd: "21:30",
+  dayTimeWindows: DEFAULT_DAY_TIME_WINDOWS,
+  timeWindowStart: "",
+  timeWindowEnd: "",
   notifyEmail: "",
   gmailUser: "",
   gmailAppPassword: "",
@@ -49,8 +65,11 @@ const DAYS = [
   { key: "sunday", label: "Sun" },
 ];
 
-// Bookmarklet code: when run on resy.com, grabs the auth token from cookies
-const BOOKMARKLET_CODE = `javascript:void((function(){try{var t=document.cookie.split(';').map(c=>c.trim()).find(c=>c.startsWith('authToken='));if(t){var v=decodeURIComponent(t.split('=')[1]);window.prompt('Your Resy auth token (Cmd+C to copy):',v)}else{var x=new XMLHttpRequest();x.open('GET','https://api.resy.com/2/user',false);x.setRequestHeader('Authorization','ResyAPI api_key="VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5"');x.withCredentials=true;x.send();if(x.status===200){var d=JSON.parse(x.responseText);window.prompt('Copy this token:',d.token||'Token not found in response')}else{alert('Could not get token. Make sure you are logged into resy.com')}}}catch(e){alert('Error: '+e.message)}})())`;
+// Bookmarklet: tries multiple methods to find the Resy auth token
+// 1. document.cookie (if not httpOnly)
+// 2. Resy's own localStorage/sessionStorage keys
+// 3. Makes an API call with credentials to extract from response
+const BOOKMARKLET_CODE = `javascript:void((function(){try{var t='';var c=document.cookie.split(';').map(function(x){return x.trim()}).find(function(x){return x.startsWith('authToken=')});if(c){t=decodeURIComponent(c.split('=').slice(1).join('='))}if(!t){try{var keys=['authToken','auth_token','resy_auth_token'];for(var i=0;i<keys.length;i++){var v=localStorage.getItem(keys[i])||sessionStorage.getItem(keys[i]);if(v){t=v;break}}}catch(e){}}if(!t){try{var x=new XMLHttpRequest();x.open('GET','https://api.resy.com/2/user',false);x.setRequestHeader('Authorization','ResyAPI api_key="VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5"');x.withCredentials=true;x.send();if(x.status===200){var d=JSON.parse(x.responseText);t=d.token||''}}catch(e){}}if(t){window.prompt('Resy auth token (Cmd+C to copy):',t)}else{alert('Could not find token automatically.\\n\\nManual method:\\n1. Open DevTools (F12)\\n2. Go to Network tab\\n3. Click any page on resy.com\\n4. Find a request to api.resy.com\\n5. Copy the x-resy-auth-token header value')}}catch(e){alert('Error: '+e.message)}})())`;
 
 interface Props {
   open: boolean;
@@ -372,24 +391,36 @@ export default function SettingsDrawer({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs text-stone-500 mb-1.5 block">Earliest Time</label>
-                  <input
-                    type="time"
-                    value={local.timeWindowStart}
-                    onChange={(e) => update({ timeWindowStart: e.target.value })}
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-stone-500 mb-1.5 block">Latest Time</label>
-                  <input
-                    type="time"
-                    value={local.timeWindowEnd}
-                    onChange={(e) => update({ timeWindowEnd: e.target.value })}
-                    className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm"
-                  />
+              <div>
+                <label className="text-xs text-stone-500 mb-2 block">Time Windows per Day</label>
+                <div className="space-y-2">
+                  {DAYS.filter((d) => local.preferredDays.includes(d.key)).map((d) => {
+                    const window = local.dayTimeWindows?.[d.key] || { start: "18:00", end: "21:30" };
+                    return (
+                      <div key={d.key} className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-charcoal w-10">{d.label}</span>
+                        <input
+                          type="time"
+                          value={window.start}
+                          onChange={(e) => {
+                            const windows = { ...local.dayTimeWindows, [d.key]: { ...window, start: e.target.value } };
+                            update({ dayTimeWindows: windows });
+                          }}
+                          className="flex-1 px-2 py-1.5 border border-stone-200 rounded-lg text-xs"
+                        />
+                        <span className="text-xs text-stone-400">to</span>
+                        <input
+                          type="time"
+                          value={window.end}
+                          onChange={(e) => {
+                            const windows = { ...local.dayTimeWindows, [d.key]: { ...window, end: e.target.value } };
+                            update({ dayTimeWindows: windows });
+                          }}
+                          className="flex-1 px-2 py-1.5 border border-stone-200 rounded-lg text-xs"
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>

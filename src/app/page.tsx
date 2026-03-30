@@ -54,17 +54,20 @@ function filterSlotsBySettings(
   slots: AvailabilitySlot[],
   settings: AppSettings,
 ): AvailabilitySlot[] {
-  const { preferredDays, timeWindowStart, timeWindowEnd } = settings;
-  if (preferredDays.length === 0 && !timeWindowStart && !timeWindowEnd) return slots;
+  const { preferredDays, dayTimeWindows } = settings;
+  if (preferredDays.length === 0) return slots;
 
   return slots.filter((slot) => {
-    if (preferredDays.length > 0) {
-      const d = new Date(slot.date + "T12:00:00");
-      const dayName = DAY_NAMES[d.getDay()];
-      if (!preferredDays.includes(dayName)) return false;
+    const d = new Date(slot.date + "T12:00:00");
+    const dayName = DAY_NAMES[d.getDay()];
+    if (!preferredDays.includes(dayName)) return false;
+
+    // Apply per-day time window if configured
+    const window = dayTimeWindows?.[dayName];
+    if (window) {
+      if (window.start && slot.time < window.start) return false;
+      if (window.end && slot.time > window.end) return false;
     }
-    if (timeWindowStart && slot.time < timeWindowStart) return false;
-    if (timeWindowEnd && slot.time > timeWindowEnd) return false;
     return true;
   });
 }
