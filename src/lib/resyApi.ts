@@ -210,6 +210,7 @@ export async function findAvailability(
     );
   }
 
+  // Try with lat/long first, then without on 500 (some venues reject randomized coords)
   const coords = randomizedCoords();
   const params = new URLSearchParams({
     venue_id: venueId.toString(),
@@ -223,10 +224,44 @@ export async function findAvailability(
   rateLimitState.lastRequestAt = Date.now();
   rateLimitState.totalRequests++;
 
-  const response = await fetch(url, {
+  let response = await fetch(url, {
     method: "GET",
     headers: buildHeaders(),
   });
+
+  // If 500, retry without randomized lat/long (some venues reject coords)
+  if (response.status === 500) {
+    await randomDelay(500, 1500);
+    const simpleParams = new URLSearchParams({
+      venue_id: venueId.toString(),
+      day: date,
+      party_size: partySize.toString(),
+      lat: "0",
+      long: "0",
+    });
+    const retryUrl = `${RESY_API_BASE}/4/find?${simpleParams}`;
+    rateLimitState.totalRequests++;
+    response = await fetch(retryUrl, {
+      method: "GET",
+      headers: buildHeaders(),
+    });
+  }
+
+  // If still 500, try without lat/long entirely
+  if (response.status === 500) {
+    await randomDelay(500, 1500);
+    const noGeoParams = new URLSearchParams({
+      venue_id: venueId.toString(),
+      day: date,
+      party_size: partySize.toString(),
+    });
+    const retryUrl2 = `${RESY_API_BASE}/4/find?${noGeoParams}`;
+    rateLimitState.totalRequests++;
+    response = await fetch(retryUrl2, {
+      method: "GET",
+      headers: buildHeaders(),
+    });
+  }
 
   // Handle rate limiting with exponential backoff
   if (response.status === 429) {
@@ -435,6 +470,10 @@ export async function checkVenueAvailability(
   partySize: number = 2,
 ): Promise<AvailabilitySlot[]> {
   if (dates.length === 0) return [];
+
+  // Reset consecutive error counter for each restaurant so failures
+  // on one venue don't cascade and abort checks for the next venue.
+  rateLimitState.consecutiveErrors = 0;
 
   const allSlots: AvailabilitySlot[] = [];
   const startDate = dates[0];
