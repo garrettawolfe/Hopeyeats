@@ -185,7 +185,10 @@ export default function Home() {
 
       clearTimeout(timeout);
 
-      if (!res.ok || !res.body) return;
+      if (!res.ok || !res.body) {
+        console.error(`Poll failed: ${res.status} ${res.statusText}`);
+        return;
+      }
 
       // Read NDJSON stream
       const reader = res.body.getReader();
