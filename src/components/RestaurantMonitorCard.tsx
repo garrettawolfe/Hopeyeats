@@ -75,18 +75,26 @@ export default function RestaurantMonitorCard({
               <span>{restaurant.neighborhood}</span>
               <span>·</span>
               <span>{restaurant.cuisine}</span>
-              {restaurant.priceRange && (
-                <>
-                  <span>·</span>
-                  <span className="text-gold">{restaurant.priceRange}</span>
-                </>
+            </div>
+            <div className="flex items-center gap-1.5 mt-1">
+              {restaurant.michelinStar && (
+                <span className="text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
+                  Michelin Star
+                </span>
+              )}
+              {restaurant.menuUrl && (
+                <a href={restaurant.menuUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-stone-400 hover:text-charcoal underline">Menu</a>
+              )}
+              {restaurant.instagramUrl && (
+                <a href={restaurant.instagramUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-stone-400 hover:text-charcoal underline">IG</a>
+              )}
+              {restaurant.website && (
+                <a href={restaurant.website} target="_blank" rel="noopener noreferrer" className="text-[10px] text-stone-400 hover:text-charcoal underline">Web</a>
+              )}
+              {restaurant.mapsUrl && (
+                <a href={restaurant.mapsUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-stone-400 hover:text-charcoal underline">Map</a>
               )}
             </div>
-            {restaurant.michelinStar && (
-              <span className="inline-block mt-1 text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
-                Michelin Star
-              </span>
-            )}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             {/* Auto-book toggle (per restaurant) — always visible when monitored */}

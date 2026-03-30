@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "HopeYeats — NYC Dining Reservation Command Center",
+  title: "WolfePack Eats — Restaurant Reservation Monitor",
   description:
-    "Manage reservation outreach for the best restaurants in New York City.",
+    "Monitor and auto-book restaurant reservations across NYC, Miami, and the Hamptons.",
 };
 
 export default function RootLayout({

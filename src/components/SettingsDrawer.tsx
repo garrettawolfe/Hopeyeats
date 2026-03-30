@@ -63,11 +63,11 @@ const DAYS = [
 
 // --- Multi-user profile storage ---
 
-const PROFILES_KEY = "hopeyeats_profiles"; // string[] of profile names
-const ACTIVE_PROFILE_KEY = "hopeyeats_active_profile"; // current profile name
+const PROFILES_KEY = "wolfepack_profiles"; // string[] of profile names
+const ACTIVE_PROFILE_KEY = "wolfepack_active_profile"; // current profile name
 
 function profileStorageKey(name: string): string {
-  return `hopeyeats_profile_${name.toLowerCase().replace(/\s+/g, "_")}`;
+  return `wolfepack_profile_${name.toLowerCase().replace(/\s+/g, "_")}`;
 }
 
 export function getProfiles(): string[] {

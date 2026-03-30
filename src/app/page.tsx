@@ -108,7 +108,10 @@ export default function Home() {
   const [bookingLog, setBookingLog] = useState<BookingLog[]>([]);
   const [search, setSearch] = useState("");
   const [filterMode, setFilterMode] = useState<"all" | "available" | "monitored">("all");
-  const [skipSetup, setSkipSetup] = useState(false);
+  const [cityFilter, setCityFilter] = useState<"all" | "nyc" | "miami" | "hamptons">("all");
+  const [mealFilter, setMealFilter] = useState<"all" | "dinner" | "bar" | "brunch">("all");
+  const [activePartySize, setActivePartySize] = useState<2 | 4>(2);
+  const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
 
   // --- Initialize profiles on mount ---
   useEffect(() => {
@@ -136,6 +139,9 @@ export default function Home() {
     }
     if (s.autoBookIds.length > 0) {
       setAutoBookIds(new Set(s.autoBookIds));
+    }
+    if (s.partySize === 2 || s.partySize === 4) {
+      setActivePartySize(s.partySize as 2 | 4);
     }
   }, []);
 
@@ -326,7 +332,7 @@ export default function Home() {
                 if (filteredNewCount > 0 && typeof Notification !== "undefined" && Notification.permission === "granted") {
                   new Notification("New Resy Reservations!", {
                     body: `${filteredNewCount} new slot${filteredNewCount !== 1 ? "s" : ""} matching your preferences`,
-                    tag: "hopeyeats",
+                    tag: "wolfepack-eats",
                   });
                 }
               }
@@ -351,7 +357,7 @@ export default function Home() {
       if (err instanceof DOMException && err.name === "AbortError") {
         // Timed out, will retry next cycle
       } else {
-        console.error("[HopeYeats] Poll error:", err);
+        console.error("[WolfePack] Poll error:", err);
       }
     } finally {
       setIsPolling(false);
@@ -520,6 +526,8 @@ export default function Home() {
     const cnt = getFilteredSlots(r.id).length;
     if (filterMode === "available" && cnt === 0) return false;
     if (filterMode === "monitored" && !monitoredIds.has(r.id)) return false;
+    if (cityFilter !== "all" && (r as any).city !== cityFilter) return false;
+    if (mealFilter !== "all" && !(r as any).category?.includes(mealFilter)) return false;
     if (search) {
       const q = search.toLowerCase();
       return r.name.toLowerCase().includes(q) || r.neighborhood.toLowerCase().includes(q) || r.cuisine.toLowerCase().includes(q);
@@ -537,29 +545,23 @@ export default function Home() {
 
   const totalSlots = resyRestaurants.reduce((sum, r) => sum + getFilteredSlots(r.id).length, 0);
   const totalNewSlots = newSlotIds.size;
+  const isAdmin = loggedInUser?.toLowerCase() === "garrett";
 
   if (!settings) return null;
 
-  // Show login page if no auth token is configured and user hasn't skipped
-  const needsSetup = !settings.resyAuthToken && !resyAuth?.authenticated && !skipSetup;
-
-  if (needsSetup) {
+  // Show login page if user hasn't logged in yet
+  if (!loggedInUser) {
     return (
       <LoginPage
-        profiles={profiles}
-        activeProfile={activeProfileName}
-        onSwitchProfile={handleSwitchProfile}
-        onCreateProfile={handleCreateProfile}
-        onTokenAuth={async (token) => {
-          const result = await handleResyTokenAuth(token);
-          if (result === true && settings) {
-            const next = { ...settings, resyAuthToken: token };
-            setSettings(next);
-            saveSettings(next);
+        onLogin={(username) => {
+          setLoggedInUser(username);
+          const existing = getProfiles();
+          if (!existing.includes(username)) {
+            handleCreateProfile(username);
+          } else {
+            handleSwitchProfile(username);
           }
-          return result;
         }}
-        onSkip={() => setSkipSetup(true)}
       />
     );
   }
@@ -571,7 +573,7 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4">
           <div className="flex items-center justify-between">
             <div className="min-w-0">
-              <h1 className="font-serif text-xl sm:text-2xl tracking-tight">HopeYeats</h1>
+              <h1 className="font-serif text-xl sm:text-2xl tracking-tight">WolfePack Eats</h1>
               <p className="text-stone-400 text-[10px] sm:text-xs mt-0.5 tracking-wide truncate">
                 {activeProfileName && <span className="text-stone-300">{activeProfileName}</span>}
                 {activeProfileName && " · "}
@@ -601,6 +603,19 @@ export default function Home() {
                 </span>
               )}
 
+              {/* Admin: profile switcher (Garrett only) */}
+              {isAdmin && profiles.length > 1 && (
+                <select
+                  value={activeProfileName ?? ""}
+                  onChange={(e) => handleSwitchProfile(e.target.value)}
+                  className="text-xs bg-stone-800 text-stone-300 border border-stone-600 rounded-lg px-2 py-1.5"
+                >
+                  {profiles.map((p) => (
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                </select>
+              )}
+
               <button
                 onClick={() => setShowSettings(true)}
                 className="flex items-center gap-1.5 text-sm text-stone-300 hover:text-white transition-colors border border-stone-700 hover:border-stone-500 px-2.5 sm:px-4 py-2 rounded-lg"
@@ -610,6 +625,16 @@ export default function Home() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                 </svg>
                 <span className="hidden sm:inline">Settings</span>
+              </button>
+
+              <button
+                onClick={() => setLoggedInUser(null)}
+                className="text-xs text-stone-500 hover:text-stone-300 transition-colors"
+                title="Logout"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
               </button>
             </div>
           </div>
@@ -734,6 +759,65 @@ export default function Home() {
           </div>
         )}
 
+        {/* City Tabs */}
+        <div className="flex gap-1 mb-3">
+          {([["all", "All Cities"], ["nyc", "NYC"], ["miami", "Miami"], ["hamptons", "Hamptons"]] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setCityFilter(key as typeof cityFilter)}
+              className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
+                cityFilter === key
+                  ? "bg-charcoal text-white"
+                  : "bg-white border border-stone-200 text-stone-500 hover:bg-stone-50"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Meal Type + Party Size Row */}
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <div className="flex gap-1">
+            {([["all", "All"], ["dinner", "Dinner"], ["bar", "Bar"], ["brunch", "Brunch"]] as const).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setMealFilter(key as typeof mealFilter)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                  mealFilter === key
+                    ? "bg-gold text-white"
+                    : "bg-white border border-stone-200 text-stone-500 hover:bg-stone-50"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="ml-auto flex items-center gap-1.5">
+            <span className="text-xs text-stone-400">Party:</span>
+            {([2, 4] as const).map((size) => (
+              <button
+                key={size}
+                onClick={() => {
+                  setActivePartySize(size);
+                  if (settings) {
+                    const next = { ...settings, partySize: size };
+                    setSettings(next);
+                    saveSettings(next);
+                  }
+                }}
+                className={`w-8 h-8 rounded-lg text-sm font-medium transition-colors ${
+                  activePartySize === size
+                    ? "bg-charcoal text-white"
+                    : "bg-white border border-stone-200 text-stone-500 hover:bg-stone-50"
+                }`}
+              >
+                {size}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Search & Filter */}
         <div className="flex flex-col sm:flex-row gap-2 mb-4 sm:mb-6">
           <input
@@ -799,7 +883,7 @@ export default function Home() {
         )}
 
         <footer className="mt-12 pt-6 border-t border-stone-200 text-center text-[10px] sm:text-xs text-stone-400 pb-4">
-          <p>HopeYeats · Monitoring {resyRestaurants.length} NYC restaurants on Resy</p>
+          <p>WolfePack Eats · Monitoring {resyRestaurants.length} restaurants on Resy</p>
         </footer>
       </main>
 
