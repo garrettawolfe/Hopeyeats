@@ -125,14 +125,6 @@ export default function RestaurantMonitorCard({
             </button>
           </div>
         </div>
-
-        {/* Must Order / Tip */}
-        {restaurant.mustOrder && (
-          <p className="mt-2 text-xs text-stone-500 line-clamp-1">
-            <span className="font-medium text-gold">Must order:</span>{" "}
-            {restaurant.mustOrder}
-          </p>
-        )}
       </div>
 
       {/* Slots */}
@@ -140,7 +132,8 @@ export default function RestaurantMonitorCard({
         <div className="border-t border-stone-100 px-5 py-3 bg-stone-50/50">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-medium text-emerald-700">
-              {slots.length} slot{slots.length !== 1 ? "s" : ""} available
+              {slots.length} slot{slots.length !== 1 ? "s" : ""} across{" "}
+              {new Set(slots.map((s) => s.date)).size} date{new Set(slots.map((s) => s.date)).size !== 1 ? "s" : ""}
             </span>
             {autoBookEnabled && isAuthenticated && (
               <span className="text-[10px] text-emerald-500 bg-emerald-50 px-1.5 py-0.5 rounded">
@@ -148,64 +141,73 @@ export default function RestaurantMonitorCard({
               </span>
             )}
           </div>
-          <div className="space-y-1.5 max-h-48 overflow-y-auto">
-            {slots.slice(0, 8).map((slot) => {
-              const isNew = newSlotIds.has(slot.id);
-              const isBooking = bookingInProgress === slot.id;
-              return (
-                <div
-                  key={slot.id}
-                  className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs ${
-                    isNew
-                      ? "bg-emerald-50 border border-emerald-200"
-                      : "bg-white border border-stone-100"
-                  }`}
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    {isNew && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
-                    )}
-                    <span className="font-medium text-charcoal">
-                      {formatDate(slot.date)}
-                    </span>
-                    <span className="text-stone-500">
-                      {formatTime12(slot.time)}
-                    </span>
-                    <span className="text-stone-400 truncate">
-                      {slot.tableType}
-                    </span>
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {(() => {
+              // Group slots by date
+              const byDate = new Map<string, AvailabilitySlot[]>();
+              for (const slot of slots) {
+                const existing = byDate.get(slot.date) ?? [];
+                existing.push(slot);
+                byDate.set(slot.date, existing);
+              }
+              const sortedDates = [...byDate.keys()].sort();
+
+              return sortedDates.map((date) => {
+                const dateSlots = byDate.get(date)!;
+                return (
+                  <div key={date}>
+                    <p className="text-[10px] font-semibold text-stone-500 uppercase tracking-wide mb-1">
+                      {formatDate(date)}
+                    </p>
+                    <div className="flex flex-wrap gap-1">
+                      {dateSlots.map((slot) => {
+                        const isNew = newSlotIds.has(slot.id);
+                        const isBooking = bookingInProgress === slot.id;
+                        return (
+                          <div
+                            key={slot.id}
+                            className={`group relative inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs border ${
+                              isNew
+                                ? "bg-emerald-50 border-emerald-300 text-emerald-700"
+                                : "bg-white border-stone-200 text-charcoal"
+                            }`}
+                          >
+                            {isNew && (
+                              <span className="w-1 h-1 rounded-full bg-emerald-500 shrink-0" />
+                            )}
+                            <span className="font-medium">{formatTime12(slot.time)}</span>
+                            <span className="text-[10px] text-stone-400">{slot.tableType}</span>
+                            <div className="hidden group-hover:flex items-center gap-0.5 ml-0.5">
+                              {isAuthenticated && (
+                                <button
+                                  onClick={() => onBook(slot)}
+                                  disabled={isBooking}
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                                    isBooking
+                                      ? "bg-amber-100 text-amber-600"
+                                      : "bg-charcoal text-white hover:bg-charcoal/80"
+                                  }`}
+                                >
+                                  {isBooking ? "..." : "Book"}
+                                </button>
+                              )}
+                              <a
+                                href={slot.resyUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="px-1.5 py-0.5 rounded text-[10px] text-stone-400 hover:text-charcoal hover:bg-stone-100"
+                              >
+                                Resy
+                              </a>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                    {isAuthenticated && (
-                      <button
-                        onClick={() => onBook(slot)}
-                        disabled={isBooking}
-                        className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
-                          isBooking
-                            ? "bg-amber-100 text-amber-600"
-                            : "bg-charcoal text-white hover:bg-charcoal/80"
-                        }`}
-                      >
-                        {isBooking ? "Booking..." : "Book"}
-                      </button>
-                    )}
-                    <a
-                      href={slot.resyUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-2.5 py-1 rounded-md text-stone-400 hover:text-charcoal hover:bg-stone-100 transition-colors"
-                    >
-                      Resy
-                    </a>
-                  </div>
-                </div>
-              );
-            })}
-            {slots.length > 8 && (
-              <p className="text-[10px] text-stone-400 text-center pt-1">
-                +{slots.length - 8} more slots
-              </p>
-            )}
+                );
+              });
+            })()}
           </div>
         </div>
       )}
