@@ -32,6 +32,51 @@ function randomUserAgent(): string {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
+// ─── Proxy Support ──────────────────────────────────────────────────────────
+
+interface ProxyConfig {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+}
+
+let proxyList: ProxyConfig[] = [];
+
+/**
+ * Set proxy list for rotating through. Format: "host:port:username:password"
+ */
+export function setProxies(proxies: string[]): void {
+  proxyList = proxies.map(p => {
+    const parts = p.split(":");
+    return {
+      host: parts[0],
+      port: parseInt(parts[1]),
+      username: parts[2],
+      password: parts[3],
+    };
+  });
+  console.log(`[Resy] Loaded ${proxyList.length} proxies`);
+}
+
+function getRandomProxy(): ProxyConfig | null {
+  if (proxyList.length === 0) return null;
+  return proxyList[Math.floor(Math.random() * proxyList.length)];
+}
+
+/**
+ * Build a proxied fetch URL. Note: In serverless environments (Vercel),
+ * native fetch doesn't support SOCKS/HTTP proxies directly.
+ * This provides the infrastructure for when a proxy agent is available.
+ * For Vercel, consider using a proxy service URL instead.
+ */
+export function getProxyUrl(): string | null {
+  const proxy = getRandomProxy();
+  if (!proxy) return null;
+  const auth = proxy.username ? `${proxy.username}:${proxy.password}@` : "";
+  return `http://${auth}${proxy.host}:${proxy.port}`;
+}
+
 // ─── Anti-Detection: Randomized Delays ───────────────────────────────────────
 
 /** Random delay between min and max milliseconds (uniform distribution). */
@@ -159,14 +204,10 @@ function buildHeaders(authToken?: string): Record<string, string> {
     headers["X-Resy-Universal-Auth"] = authToken;
   }
 
-  if (Math.random() > 0.5) {
-    headers["Accept-Encoding"] = "gzip, deflate, br";
-  }
-  if (Math.random() > 0.7) {
-    headers["Sec-Fetch-Dest"] = "empty";
-    headers["Sec-Fetch-Mode"] = "cors";
-    headers["Sec-Fetch-Site"] = "same-site";
-  }
+  headers["Accept-Encoding"] = "gzip, deflate, br";
+  headers["Sec-Fetch-Dest"] = "empty";
+  headers["Sec-Fetch-Mode"] = "cors";
+  headers["Sec-Fetch-Site"] = "same-site";
 
   return headers;
 }
@@ -200,8 +241,8 @@ export async function findAvailability(
     venue_id: venueId.toString(),
     day: date,
     party_size: partySize.toString(),
-    lat: "40.7128",
-    long: "-74.0060",
+    lat: "0",
+    long: "0",
   });
 
   const url = `${RESY_API_BASE}/4/find?${params}`;

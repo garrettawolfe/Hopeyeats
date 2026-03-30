@@ -100,15 +100,18 @@ export async function setAuthFromToken(
 
 // ─── Headers ────────────────────────────────────────────────────────────────
 
-function buildAuthHeaders(authToken: string): Record<string, string> {
+function buildAuthHeaders(authToken: string, forBooking = false): Record<string, string> {
+  const origin = forBooking ? "https://widgets.resy.com" : "https://resy.com";
   return {
     Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
     "X-Resy-Auth-Token": authToken,
     "X-Resy-Universal-Auth": authToken,
     Accept: "application/json",
     "Content-Type": "application/x-www-form-urlencoded",
-    Origin: "https://resy.com",
-    Referer: "https://resy.com/",
+    Origin: origin,
+    Referer: `${origin}/`,
+    "X-Origin": origin,
+    "Cache-Control": "no-cache",
   };
 }
 
@@ -273,13 +276,22 @@ export async function bookReservation(
     const body = new URLSearchParams({
       book_token: bookToken,
       struct_payment_method: JSON.stringify({ id: paymentMethodId }),
+      source_id: "resy.com-venue-details",
     });
 
     const response = await fetch(`${RESY_API_BASE}/3/book`, {
       method: "POST",
-      headers: buildAuthHeaders(authToken),
+      headers: buildAuthHeaders(authToken, true),
       body: body.toString(),
     });
+
+    if (response.status === 412) {
+      const data = await response.json().catch(() => ({}));
+      const reservationId = data.specs?.reservation_id ?? data.reservation_id;
+      if (reservationId) {
+        return { success: true, reservationId: String(reservationId), resyToken: data.resy_token };
+      }
+    }
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
@@ -419,6 +431,49 @@ export function getExistingReservations(): ExistingReservation[] {
   return existingReservations;
 }
 
+// ─── Payment Method Pre-Caching ────────────────────────────────────────────
+
+let cachedPaymentMethodId: number | null = null;
+
+export async function prefetchPaymentMethod(authToken: string): Promise<number | null> {
+  if (cachedPaymentMethodId) return cachedPaymentMethodId;
+
+  try {
+    const response = await fetch(`${RESY_API_BASE}/2/user`, {
+      method: "GET",
+      headers: {
+        Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
+        "X-Resy-Auth-Token": authToken,
+        "X-Resy-Universal-Auth": authToken,
+        Accept: "application/json",
+      },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    cachedPaymentMethodId = data.payment_method_id ?? data.payment_methods?.[0]?.id ?? null;
+    return cachedPaymentMethodId;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Connection Warmup ─────────────────────────────────────────────────────
+
+export async function warmupConnection(authToken: string): Promise<void> {
+  try {
+    await fetch(`${RESY_API_BASE}/2/user`, {
+      method: "GET",
+      headers: {
+        Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
+        "X-Resy-Auth-Token": authToken,
+        Accept: "application/json",
+      },
+    });
+  } catch {
+    // Warmup failure is non-fatal
+  }
+}
+
 // ─── Full Auto-Book Flow ────────────────────────────────────────────────────
 
 /**
@@ -477,6 +532,57 @@ export async function autoBook(
     restaurantName,
     date,
     time,
+    partySize,
+  };
+}
+
+// ─── Slot Pool with Retry Logic ────────────────────────────────────────────
+
+/**
+ * Try booking from a pool of slots with retry logic.
+ * Iterates through slots in sequence, retrying with delays up to maxRetries times.
+ */
+export async function autoBookWithRetry(
+  authToken: string,
+  paymentMethodId: number,
+  slots: Array<{ configToken: string; date: string; time: string }>,
+  partySize: number,
+  restaurantName: string,
+  maxRetries: number = 5,
+  retryDelayMs: number = 500,
+): Promise<BookingResult> {
+  const existing = await fetchExistingReservations(authToken);
+  const failedTokens = new Set<string>();
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    for (const slot of slots) {
+      if (failedTokens.has(slot.configToken)) continue;
+      if (hasTimeConflict(existing, slot.date, slot.time)) continue;
+
+      const details = await getSlotDetails(authToken, slot.configToken, slot.date, partySize);
+      if (!details) {
+        failedTokens.add(slot.configToken);
+        continue;
+      }
+
+      const result = await bookReservation(authToken, details.bookToken, paymentMethodId);
+      if (result.success) {
+        lastReservationFetch = 0;
+        return { ...result, restaurantName, date: slot.date, time: slot.time, partySize };
+      }
+
+      failedTokens.add(slot.configToken);
+    }
+
+    if (attempt < maxRetries - 1) {
+      await new Promise(r => setTimeout(r, retryDelayMs));
+    }
+  }
+
+  return {
+    success: false,
+    error: `Failed after ${maxRetries} attempts across ${slots.length} slots`,
+    restaurantName,
     partySize,
   };
 }
