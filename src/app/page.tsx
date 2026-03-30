@@ -127,6 +127,10 @@ export default function Home() {
     setIsPolling(true);
 
     try {
+      // Abort if the poll takes longer than 120s
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120_000);
+
       const res = await fetch("/api/resy-monitor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -136,7 +140,10 @@ export default function Home() {
           resolveIds: true,
           notifications: buildNotificationConfig(),
         }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeout);
 
       if (!res.ok) return;
 

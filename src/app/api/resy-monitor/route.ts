@@ -23,6 +23,9 @@ import {
   type NotificationConfig,
 } from "@/lib/notifications";
 
+// Allow up to 120s for Vercel Pro (default is 10s on free tier)
+export const maxDuration = 120;
+
 // In-memory monitor state (persists across requests while the server runs)
 let monitorState: MonitorState = createMonitorState();
 
@@ -154,10 +157,23 @@ export async function POST(request: Request) {
     const isBaseline = monitorState.pollCount === 0;
     const diffs: SerializableSlotDiff[] = [];
 
+    // Time budget: stop processing after 90s to avoid timeouts
+    const pollStart = Date.now();
+    const TIME_BUDGET_MS = 90_000;
+    let timedOut = false;
+
     for (const batch of batches) {
+      if (timedOut) break;
+
       // Process each restaurant in the batch
       for (const restaurant of batch) {
-        const lookAhead = daysAhead ?? Math.min(restaurant.advanceDays, 30);
+        if (Date.now() - pollStart > TIME_BUDGET_MS) {
+          console.warn(`[Monitor] Time budget exceeded after ${diffs.length}/${monitored.length} restaurants`);
+          timedOut = true;
+          break;
+        }
+
+        const lookAhead = daysAhead ?? Math.min(restaurant.advanceDays, 14);
         // During quiet hours, only check the next 7 days (cancellation window)
         const effectiveLookAhead = quiet
           ? Math.min(lookAhead, 7)
@@ -184,8 +200,29 @@ export async function POST(request: Request) {
       }
 
       // Random delay between batches
-      if (batches.indexOf(batch) < batches.length - 1) {
+      if (batches.indexOf(batch) < batches.length - 1 && !timedOut) {
         await batchDelay();
+      }
+    }
+
+    // For restaurants we didn't get to check this poll, include their
+    // cached slots from previous polls so the UI still shows them
+    if (timedOut) {
+      const checkedIds = new Set(diffs.map((d) => d.restaurant.id));
+      for (const restaurant of monitored) {
+        if (checkedIds.has(restaurant.id)) continue;
+        const snapshot = monitorState.snapshots.get(restaurant.id);
+        if (snapshot) {
+          const cachedSlots = Array.from(snapshot.slots.values());
+          diffs.push({
+            restaurant,
+            currentSlots: cachedSlots,
+            newSlots: [],
+            droppedSlots: [],
+            totalAvailable: cachedSlots.length,
+            checkedAt: snapshot.checkedAt,
+          });
+        }
       }
     }
 
