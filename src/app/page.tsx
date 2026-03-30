@@ -14,7 +14,6 @@ import SettingsDrawer, {
 } from "@/components/SettingsDrawer";
 import RestaurantMonitorCard from "@/components/RestaurantMonitorCard";
 
-// All restaurants monitorable on Resy
 const resyRestaurants = restaurants.filter(
   (r) =>
     r.resyUrl !== null &&
@@ -32,6 +31,14 @@ interface BookingLog {
   timestamp: string;
 }
 
+interface ActivityItem {
+  id: string;
+  restaurant: string;
+  slotCount: number;
+  newCount: number;
+  timestamp: number;
+}
+
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const seconds = Math.floor(diff / 1000);
@@ -41,10 +48,8 @@ function timeAgo(iso: string): string {
   return `${Math.floor(minutes / 60)}h ago`;
 }
 
-/** Map day-of-week number (0=Sun) to lowercase day name */
 const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
-/** Filter slots by preferred days and time window from settings */
 function filterSlotsBySettings(
   slots: AvailabilitySlot[],
   settings: AppSettings,
@@ -53,17 +58,13 @@ function filterSlotsBySettings(
   if (preferredDays.length === 0 && !timeWindowStart && !timeWindowEnd) return slots;
 
   return slots.filter((slot) => {
-    // Filter by day of week
     if (preferredDays.length > 0) {
       const d = new Date(slot.date + "T12:00:00");
       const dayName = DAY_NAMES[d.getDay()];
       if (!preferredDays.includes(dayName)) return false;
     }
-
-    // Filter by time window
     if (timeWindowStart && slot.time < timeWindowStart) return false;
     if (timeWindowEnd && slot.time > timeWindowEnd) return false;
-
     return true;
   });
 }
@@ -77,12 +78,12 @@ export default function Home() {
     lastName?: string;
   } | null>(null);
 
-  // Monitor state
   const [monitoredIds, setMonitoredIds] = useState<Set<string>>(
     () => new Set(resyRestaurants.map((r) => r.id)),
   );
   const [latestResult, setLatestResult] = useState<MonitorPollResult | null>(null);
   const [allSlots, setAllSlots] = useState<Map<string, AvailabilitySlot[]>>(new Map());
+  const [lastCheckedMap, setLastCheckedMap] = useState<Map<string, string>>(new Map());
   const [newSlotIds, setNewSlotIds] = useState<Set<string>>(new Set());
   const [pollCount, setPollCount] = useState(0);
   const [isPolling, setIsPolling] = useState(false);
@@ -97,23 +98,19 @@ export default function Home() {
     total: number;
   } | null>(null);
 
-  // Per-restaurant auto-book
-  const [autoBookIds, setAutoBookIds] = useState<Set<string>>(new Set());
+  // Activity feed (streams live availability into top bar)
+  const [activityFeed, setActivityFeed] = useState<ActivityItem[]>([]);
 
-  // Booking
+  const [autoBookIds, setAutoBookIds] = useState<Set<string>>(new Set());
   const [bookingInProgress, setBookingInProgress] = useState<string | null>(null);
   const [bookingLog, setBookingLog] = useState<BookingLog[]>([]);
-
-  // Filter
   const [search, setSearch] = useState("");
   const [filterMode, setFilterMode] = useState<"all" | "available" | "monitored">("all");
 
-  // Load settings from localStorage
   useEffect(() => {
     setSettings(loadSettings());
   }, []);
 
-  // Check auth status on load
   useEffect(() => {
     fetch("/api/resy-auth")
       .then((r) => r.json())
@@ -121,17 +118,14 @@ export default function Home() {
       .catch(() => setResyAuth({ authenticated: false }));
   }, []);
 
-  // Tick for time-ago updates
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 10000);
     return () => clearInterval(t);
   }, []);
 
-  // Build notification config from settings
   const buildNotificationConfig = useCallback((): NotificationConfig => {
     if (!settings) return {};
     const config: NotificationConfig = {};
-
     if (settings.notifyEmail && settings.gmailUser && settings.gmailAppPassword) {
       config.email = {
         enabled: true,
@@ -140,7 +134,6 @@ export default function Home() {
         gmailAppPassword: settings.gmailAppPassword,
       };
     }
-
     if (settings.smsPhone && settings.smsCarrier && settings.gmailUser && settings.gmailAppPassword) {
       const smsAddr = buildSmsEmail(settings.smsPhone, settings.smsCarrier);
       if (smsAddr) {
@@ -152,20 +145,18 @@ export default function Home() {
         };
       }
     }
-
     return config;
   }, [settings]);
 
-  // Prevent concurrent polls
   const pollInFlight = useRef(false);
 
-  // Poll function — reads NDJSON stream for incremental updates
   const poll = useCallback(async () => {
     if (monitoredIds.size === 0) return;
     if (pollInFlight.current) return;
     pollInFlight.current = true;
     setIsPolling(true);
     setScanProgress(null);
+    setActivityFeed([]);
 
     try {
       const controller = new AbortController();
@@ -190,7 +181,6 @@ export default function Home() {
         return;
       }
 
-      // Read NDJSON stream
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -203,7 +193,7 @@ export default function Home() {
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
-        buffer = lines.pop() ?? ""; // Keep incomplete line in buffer
+        buffer = lines.pop() ?? "";
 
         for (const line of lines) {
           if (!line.trim()) continue;
@@ -218,20 +208,38 @@ export default function Home() {
               });
             } else if (event.type === "result" || event.type === "cached") {
               const diff: SerializableSlotDiff = event.diff;
-              // Update slots for this restaurant immediately
+
+              // Update slots immediately
               setAllSlots((prev) => {
                 const next = new Map(prev);
                 next.set(diff.restaurant.id, diff.currentSlots ?? []);
                 return next;
               });
 
-              // Track new slot IDs
+              // Update lastChecked per restaurant immediately
+              setLastCheckedMap((prev) => {
+                const next = new Map(prev);
+                next.set(diff.restaurant.id, diff.checkedAt);
+                return next;
+              });
+
               if (diff.newSlots.length > 0) {
                 for (const slot of diff.newSlots) {
                   streamNewIds.add(slot.id);
                 }
                 setNewSlotIds(new Set(streamNewIds));
               }
+            } else if (event.type === "activity") {
+              setActivityFeed((prev) => [
+                {
+                  id: `${event.restaurant}-${Date.now()}`,
+                  restaurant: event.restaurant,
+                  slotCount: event.slotCount,
+                  newCount: event.newCount,
+                  timestamp: Date.now(),
+                },
+                ...prev,
+              ].slice(0, 10));
             } else if (event.type === "done") {
               const result: MonitorPollResult = event.pollResult;
               streamIsBaseline = result.isBaseline;
@@ -239,12 +247,10 @@ export default function Home() {
               setLastPollTime(new Date().toISOString());
               setPollCount((c) => c + 1);
 
-              // Clear new IDs on baseline
               if (result.isBaseline) {
                 setNewSlotIds(new Set());
               }
 
-              // Browser notification
               if (!result.isBaseline) {
                 const totalNew = result.diffs.reduce((sum, d) => sum + d.newSlots.length, 0);
                 if (totalNew > 0 && typeof Notification !== "undefined" && Notification.permission === "granted") {
@@ -262,16 +268,10 @@ export default function Home() {
       }
 
       // Auto-book after stream completes
-      if (
-        resyAuth?.authenticated &&
-        !streamIsBaseline &&
-        autoBookIds.size > 0 &&
-        latestResult
-      ) {
+      if (resyAuth?.authenticated && !streamIsBaseline && autoBookIds.size > 0 && latestResult) {
         for (const diff of latestResult.diffs) {
           if (diff.newSlots.length > 0 && autoBookIds.has(diff.restaurant.id)) {
-            const slot = diff.newSlots[0];
-            handleBook(slot);
+            handleBook(diff.newSlots[0]);
           }
         }
       }
@@ -289,30 +289,21 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monitoredIds, settings, resyAuth, buildNotificationConfig]);
 
-  // Start auto-monitoring on mount
   useEffect(() => {
     if (!settings) return;
-
-    // Request notification permission
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission();
     }
-
-    // Initial poll
     poll();
-
-    // Set up interval with jitter
     const baseInterval = 60_000;
     const jitter = baseInterval * (0.85 + Math.random() * 0.3);
     intervalRef.current = setInterval(poll, jitter);
-
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings !== null]);
 
-  // Book a slot
   const handleBook = async (slot: AvailabilitySlot) => {
     setBookingInProgress(slot.id);
     try {
@@ -327,7 +318,6 @@ export default function Home() {
           time: slot.time,
         }),
       });
-
       const data = await res.json();
       const log: BookingLog = {
         id: slot.id,
@@ -347,17 +337,12 @@ export default function Home() {
     }
   };
 
-  // Toggle monitoring for a restaurant
   const toggleMonitor = (id: string) => {
     setMonitoredIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
         next.delete(id);
-        setAutoBookIds((ab) => {
-          const nextAb = new Set(ab);
-          nextAb.delete(id);
-          return nextAb;
-        });
+        setAutoBookIds((ab) => { const n = new Set(ab); n.delete(id); return n; });
       } else {
         next.add(id);
       }
@@ -365,7 +350,6 @@ export default function Home() {
     });
   };
 
-  // Toggle auto-book for a specific restaurant
   const toggleAutoBook = (id: string) => {
     setAutoBookIds((prev) => {
       const next = new Set(prev);
@@ -375,7 +359,6 @@ export default function Home() {
     });
   };
 
-  // Resy auth handlers
   const handleResyLogin = async (email: string, password: string): Promise<true | string> => {
     try {
       const res = await fetch("/api/resy-auth", {
@@ -384,10 +367,7 @@ export default function Home() {
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
-      if (data.authenticated) {
-        setResyAuth(data);
-        return true;
-      }
+      if (data.authenticated) { setResyAuth(data); return true; }
       return data.error || "Login failed";
     } catch (err) {
       return err instanceof Error ? err.message : "Network error";
@@ -403,7 +383,6 @@ export default function Home() {
     setResyAuth({ authenticated: false });
   };
 
-  // Filter & sort restaurants — apply day/time filter to slot counts
   const getFilteredSlots = useCallback(
     (restaurantId: string): AvailabilitySlot[] => {
       const raw = allSlots.get(restaurantId) ?? [];
@@ -417,7 +396,6 @@ export default function Home() {
     const filteredSlotCount = getFilteredSlots(r.id).length;
     if (filterMode === "available" && filteredSlotCount === 0) return false;
     if (filterMode === "monitored" && !monitoredIds.has(r.id)) return false;
-
     if (search) {
       const q = search.toLowerCase();
       return (
@@ -429,7 +407,6 @@ export default function Home() {
     return true;
   });
 
-  // Sort: available first, then monitored, then rest
   const sorted = [...filtered].sort((a, b) => {
     const aSlots = getFilteredSlots(a.id).length;
     const bSlots = getFilteredSlots(b.id).length;
@@ -459,7 +436,6 @@ export default function Home() {
               </p>
             </div>
             <div className="flex items-center gap-4">
-              {/* Status pill */}
               <div className="hidden sm:flex items-center gap-2 text-xs text-stone-400">
                 <span
                   className={`w-2 h-2 rounded-full ${
@@ -472,14 +448,13 @@ export default function Home() {
                 />
                 {isPolling
                   ? scanProgress
-                    ? `Scanning ${scanProgress.restaurant}...`
+                    ? `Scanning ${scanProgress.restaurant.split(",")[0]}...`
                     : "Scanning..."
                   : lastPollTime
                     ? `Poll #${pollCount} · ${timeAgo(lastPollTime)}`
                     : "Starting..."}
               </div>
 
-              {/* Auth indicator */}
               {resyAuth?.authenticated && (
                 <span className="hidden sm:inline text-xs text-emerald-400 bg-emerald-400/10 px-2 py-1 rounded-full">
                   {resyAuth.firstName}
@@ -490,24 +465,9 @@ export default function Home() {
                 onClick={() => setShowSettings(true)}
                 className="flex items-center gap-2 text-sm text-stone-300 hover:text-white transition-colors border border-stone-700 hover:border-stone-500 px-4 py-2 rounded-lg"
               >
-                <svg
-                  className="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                  />
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                  />
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                 </svg>
                 Settings
               </button>
@@ -515,30 +475,49 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Scan progress bar */}
-        {isPolling && scanProgress && (
+        {/* Progress bar + live activity feed */}
+        {isPolling && (
           <div className="bg-charcoal/90 border-t border-stone-700">
             <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2">
-              <div className="flex items-center gap-3">
-                <div className="flex-1">
+              {/* Progress */}
+              {scanProgress && (
+                <div className="mb-2">
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-stone-300">
-                      Scanning <strong className="text-white">{scanProgress.restaurant}</strong>
+                      Scanning <strong className="text-white">{scanProgress.restaurant.split(",")[0]}</strong>
+                      {scanProgress.restaurant.includes(",") && (
+                        <span className="text-stone-500"> +{scanProgress.restaurant.split(",").length - 1} more</span>
+                      )}
                     </span>
                     <span className="text-stone-400">
-                      {scanProgress.index + 1}/{scanProgress.total}
+                      {Math.min(scanProgress.index + (scanProgress.restaurant.split(",").length), scanProgress.total)}/{scanProgress.total}
                     </span>
                   </div>
                   <div className="h-1 bg-stone-700 rounded-full overflow-hidden">
                     <div
                       className="h-full bg-gold rounded-full transition-all duration-500"
                       style={{
-                        width: `${((scanProgress.index + 1) / scanProgress.total) * 100}%`,
+                        width: `${(Math.min(scanProgress.index + scanProgress.restaurant.split(",").length, scanProgress.total) / scanProgress.total) * 100}%`,
                       }}
                     />
                   </div>
                 </div>
-              </div>
+              )}
+
+              {/* Live activity feed */}
+              {activityFeed.length > 0 && (
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {activityFeed.slice(0, 5).map((item) => (
+                    <span
+                      key={item.id}
+                      className="text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded-full animate-in fade-in"
+                    >
+                      {item.restaurant}: {item.slotCount} slot{item.slotCount !== 1 ? "s" : ""}
+                      {item.newCount > 0 && <span className="text-emerald-300 font-bold"> +{item.newCount} new</span>}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -569,9 +548,7 @@ export default function Home() {
               </span>
             )}
             <button
-              onClick={() =>
-                setMonitoredIds(new Set(resyRestaurants.map((r) => r.id)))
-              }
+              onClick={() => setMonitoredIds(new Set(resyRestaurants.map((r) => r.id)))}
               className="text-xs text-stone-400 hover:text-stone-600 underline"
             >
               Monitor All
@@ -595,17 +572,13 @@ export default function Home() {
         {/* Booking Activity */}
         {bookingLog.length > 0 && (
           <div className="mb-6 bg-white border border-stone-200 rounded-2xl p-4">
-            <h2 className="text-sm font-semibold text-charcoal mb-2">
-              Recent Bookings
-            </h2>
+            <h2 className="text-sm font-semibold text-charcoal mb-2">Recent Bookings</h2>
             <div className="space-y-1.5 max-h-32 overflow-y-auto">
               {bookingLog.map((log, i) => (
                 <div
                   key={i}
                   className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs ${
-                    log.status === "success"
-                      ? "bg-emerald-50 text-emerald-700"
-                      : "bg-red-50 text-red-600"
+                    log.status === "success" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"
                   }`}
                 >
                   <span>
@@ -622,12 +595,8 @@ export default function Home() {
         {!resyAuth?.authenticated && (
           <div className="mb-6 bg-gold/10 border border-gold/30 rounded-2xl px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
-              <p className="font-medium text-charcoal">
-                Connect your Resy account for auto-booking
-              </p>
-              <p className="text-sm text-stone-500 mt-0.5">
-                Without it, you can still monitor and manually book via Resy links.
-              </p>
+              <p className="font-medium text-charcoal">Connect your Resy account for auto-booking</p>
+              <p className="text-sm text-stone-500 mt-0.5">Without it, you can still monitor and manually book via Resy links.</p>
             </div>
             <button
               onClick={() => setShowSettings(true)}
@@ -669,10 +638,7 @@ export default function Home() {
           <div className="text-center py-20 text-stone-400">
             <p className="text-lg mb-2">No restaurants match your filters</p>
             <button
-              onClick={() => {
-                setFilterMode("all");
-                setSearch("");
-              }}
+              onClick={() => { setFilterMode("all"); setSearch(""); }}
               className="text-sm underline hover:text-stone-600"
             >
               Clear filters
@@ -681,9 +647,6 @@ export default function Home() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {sorted.map((r) => {
-              const diff = latestResult?.diffs.find(
-                (d) => d.restaurant.id === r.id,
-              );
               const filteredSlots = getFilteredSlots(r.id);
               return (
                 <RestaurantMonitorCard
@@ -698,42 +661,30 @@ export default function Home() {
                   onToggleAutoBook={toggleAutoBook}
                   onBook={handleBook}
                   bookingInProgress={bookingInProgress}
-                  lastChecked={diff?.checkedAt ?? null}
+                  lastChecked={lastCheckedMap.get(r.id) ?? null}
                 />
               );
             })}
           </div>
         )}
 
-        {/* Rate limit info */}
         {latestResult?.rateLimitStats?.isBackedOff && (
           <div className="mt-6 bg-orange-50 border border-orange-200 rounded-xl px-4 py-3 text-sm text-orange-700">
-            Rate limited — backing off for{" "}
-            {Math.round((latestResult.rateLimitStats.backoffRemaining ?? 0) / 1000)}s
+            Rate limited — backing off for {Math.round((latestResult.rateLimitStats.backoffRemaining ?? 0) / 1000)}s
           </div>
         )}
 
-        {/* Footer */}
         <footer className="mt-16 pt-8 border-t border-stone-200 text-center text-xs text-stone-400">
-          <p>
-            HopeYeats · NYC Restaurant Reservation Sniper · Monitoring{" "}
-            {resyRestaurants.length} restaurants on Resy.
-          </p>
-          <p className="mt-1">
-            Your credentials are stored locally in your browser. Resy auth tokens are server-side only.
-          </p>
+          <p>HopeYeats · NYC Restaurant Reservation Sniper · Monitoring {resyRestaurants.length} restaurants on Resy.</p>
+          <p className="mt-1">Your credentials are stored locally in your browser. Resy auth tokens are server-side only.</p>
         </footer>
       </main>
 
-      {/* Settings Drawer */}
       <SettingsDrawer
         open={showSettings}
         onClose={() => setShowSettings(false)}
         settings={settings}
-        onSettingsChange={(s) => {
-          setSettings(s);
-          saveSettings(s);
-        }}
+        onSettingsChange={(s) => { setSettings(s); saveSettings(s); }}
         resyAuth={resyAuth}
         onResyLogin={handleResyLogin}
         onResyLogout={handleResyLogout}

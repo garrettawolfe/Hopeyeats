@@ -172,12 +172,24 @@ export default function RestaurantMonitorCard({
                         const isNew = newSlotIds.has(slot.id);
                         const isBooking = bookingInProgress === slot.id;
                         return (
-                          <div
+                          <a
                             key={slot.id}
-                            className={`group relative inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs border ${
-                              isNew
-                                ? "bg-emerald-50 border-emerald-300 text-emerald-700"
-                                : "bg-white border-stone-200 text-charcoal"
+                            href={slot.resyUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => {
+                              if (isAuthenticated) {
+                                e.preventDefault();
+                                onBook(slot);
+                              }
+                              // If not authenticated, let the link open Resy
+                            }}
+                            className={`group relative inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs border cursor-pointer transition-colors ${
+                              isBooking
+                                ? "bg-amber-50 border-amber-300 text-amber-700"
+                                : isNew
+                                  ? "bg-emerald-50 border-emerald-300 text-emerald-700 hover:bg-emerald-100"
+                                  : "bg-white border-stone-200 text-charcoal hover:bg-stone-50 hover:border-stone-300"
                             }`}
                           >
                             {isNew && (
@@ -185,30 +197,10 @@ export default function RestaurantMonitorCard({
                             )}
                             <span className="font-medium">{formatTime12(slot.time)}</span>
                             <span className="text-[10px] text-stone-400">{slot.tableType}</span>
-                            <div className="hidden group-hover:flex items-center gap-0.5 ml-0.5">
-                              {isAuthenticated && (
-                                <button
-                                  onClick={() => onBook(slot)}
-                                  disabled={isBooking}
-                                  className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                                    isBooking
-                                      ? "bg-amber-100 text-amber-600"
-                                      : "bg-charcoal text-white hover:bg-charcoal/80"
-                                  }`}
-                                >
-                                  {isBooking ? "..." : "Book"}
-                                </button>
-                              )}
-                              <a
-                                href={slot.resyUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="px-1.5 py-0.5 rounded text-[10px] text-stone-400 hover:text-charcoal hover:bg-stone-100"
-                              >
-                                Resy
-                              </a>
-                            </div>
-                          </div>
+                            {isBooking && (
+                              <span className="text-[10px] text-amber-600 font-medium">Booking...</span>
+                            )}
+                          </a>
                         );
                       })}
                     </div>

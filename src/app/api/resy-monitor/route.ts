@@ -11,7 +11,6 @@ import {
   createMonitorState,
   updateSnapshot,
   formatPollSummary,
-  batchRestaurants,
   type MonitorState,
   type MonitoredRestaurant,
   type MonitorPollResult,
@@ -23,39 +22,24 @@ import {
 } from "@/lib/notifications";
 import { getCachedAuth } from "@/lib/resyBooking";
 
-// Allow up to 120s for Vercel Pro (default is 10s on free tier)
 export const maxDuration = 120;
 
-// In-memory monitor state (persists across requests while the server runs)
 let monitorState: MonitorState = createMonitorState();
-
-// Cache resolved venue IDs so we don't re-resolve every poll
 const venueIdCache = new Map<string, number>();
-
-// Persisted notification config (set via POST, used on every poll)
 let notificationConfig: NotificationConfig = {};
-
-// Rotation index — check a subset of restaurants per poll, rotating through all
 let rotationIndex = 0;
 const RESTAURANTS_PER_POLL = 8;
 
-/** Small random delay between batches (1-2s). */
-function batchDelay(): Promise<void> {
-  const ms = 1000 + Math.random() * 1000;
+/** Delay helper */
+function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
  * POST /api/resy-monitor
  *
- * Poll selected restaurants for availability changes.
- * Returns a newline-delimited JSON stream so the client can update incrementally.
- *
- * Stream events:
- *   { type: "progress", restaurant: string, index: number, total: number }
- *   { type: "result", diff: SerializableSlotDiff }
- *   { type: "cached", diff: SerializableSlotDiff }
- *   { type: "done", pollResult: MonitorPollResult }
+ * Streams NDJSON: progress, result, activity, done events.
+ * Restaurants within each batch are checked in PARALLEL for speed.
  */
 export async function POST(request: Request) {
   try {
@@ -76,10 +60,7 @@ export async function POST(request: Request) {
       notifications?: NotificationConfig;
     };
 
-    // Update notification config if provided
-    if (notifications) {
-      notificationConfig = notifications;
-    }
+    if (notifications) notificationConfig = notifications;
 
     if (reset) {
       monitorState = createMonitorState();
@@ -90,38 +71,23 @@ export async function POST(request: Request) {
       );
     }
 
-    // ── Resolve missing venue IDs if requested ──────────────────────────
+    // Resolve missing venue IDs
     if (resolveIds) {
       const needsResolution = restaurants.filter(
-        (r) =>
-          r.resyVenueId === null &&
-          r.resyUrl !== null &&
-          !venueIdCache.has(r.id),
+        (r) => r.resyVenueId === null && r.resyUrl !== null && !venueIdCache.has(r.id),
       );
-
       for (const r of needsResolution) {
         const slug = r.resyUrl!.split("/venues/")[1];
         if (!slug) continue;
-
         const venueId = await resolveVenueId(slug);
-        if (venueId) {
-          venueIdCache.set(r.id, venueId);
-          console.log(`[Monitor] Resolved ${r.name} → venue ID ${venueId}`);
-        }
-
-        await new Promise((resolve) =>
-          setTimeout(resolve, 1000 + Math.random() * 2000),
-        );
+        if (venueId) venueIdCache.set(r.id, venueId);
+        await delay(500 + Math.random() * 1000);
       }
     }
 
-    // ── Determine monitorable restaurants ────────────────────────────────
+    // Determine monitorable restaurants
     const monitorable = restaurants
-      .filter(
-        (r) =>
-          r.resyUrl !== null &&
-          (r.reservationMethod === "resy" || r.reservationMethod === "both"),
-      )
+      .filter((r) => r.resyUrl !== null && (r.reservationMethod === "resy" || r.reservationMethod === "both"))
       .map((r) => ({
         ...r,
         effectiveVenueId: r.resyVenueId ?? venueIdCache.get(r.id) ?? null,
@@ -134,21 +100,12 @@ export async function POST(request: Request) {
 
     if (targets.length === 0) {
       return new Response(
-        JSON.stringify({
-          type: "done",
-          pollResult: {
-            error: "No monitorable restaurants found.",
-            monitorableCount: 0,
-          },
-        }) + "\n",
+        JSON.stringify({ type: "done", pollResult: { error: "No monitorable restaurants found.", monitorableCount: 0 } }) + "\n",
         { status: 400, headers: { "Content-Type": "application/x-ndjson" } },
       );
     }
 
-    // ── Check quiet hours ────────────────────────────────────────────────
     const quiet = isQuietHours();
-
-    // ── Build monitored restaurant list ──────────────────────────────────
     const monitored: MonitoredRestaurant[] = targets.map((r) => ({
       id: r.id,
       name: r.name,
@@ -157,12 +114,10 @@ export async function POST(request: Request) {
       advanceDays: r.advanceDays,
     }));
 
-    // ── Rotate restaurants: check a subset per poll ───────────────────────
     const isBaseline = monitorState.pollCount === 0;
-
     const auth = getCachedAuth();
-    console.log(`[Monitor] Poll #${monitorState.pollCount + 1} | ${monitored.length} restaurants | auth=${!!auth?.authToken} | quiet=${quiet} | baseline=${isBaseline}`);
 
+    // Rotation: subset per poll (all on baseline)
     let pollTargets: MonitoredRestaurant[];
     if (isBaseline) {
       pollTargets = monitored;
@@ -175,9 +130,9 @@ export async function POST(request: Request) {
       rotationIndex = (start + RESTAURANTS_PER_POLL) % monitored.length;
     }
 
-    console.log(`[Monitor] Checking ${pollTargets.length} restaurants: ${pollTargets.map(r => r.name).join(", ")}`);
+    console.log(`[Monitor] Poll #${monitorState.pollCount + 1} | checking ${pollTargets.length}/${monitored.length} | auth=${!!auth?.authToken}`);
 
-    // ── Stream response ─────────────────────────────────────────────────
+    // Stream response
     const encoder = new TextEncoder();
     const stream = new TransformStream();
     const writer = stream.writable.getWriter();
@@ -186,68 +141,84 @@ export async function POST(request: Request) {
       await writer.write(encoder.encode(JSON.stringify(data) + "\n"));
     };
 
-    // Process in background, streaming results
     const processAsync = async () => {
-      const batches = batchRestaurants(pollTargets, quiet ? 2 : 3);
       const diffs: SerializableSlotDiff[] = [];
       const pollStart = Date.now();
-      const TIME_BUDGET_MS = 60_000;
-      let timedOut = false;
+      const TIME_BUDGET_MS = 55_000;
       let processedCount = 0;
 
-      for (const batch of batches) {
-        if (timedOut) break;
+      // Process in parallel batches of 3 restaurants at a time
+      const BATCH_SIZE = quiet ? 2 : 3;
 
-        for (const restaurant of batch) {
-          if (Date.now() - pollStart > TIME_BUDGET_MS) {
-            console.warn(`[Monitor] Time budget exceeded after ${diffs.length}/${pollTargets.length} restaurants`);
-            timedOut = true;
-            break;
-          }
+      for (let batchStart = 0; batchStart < pollTargets.length; batchStart += BATCH_SIZE) {
+        if (Date.now() - pollStart > TIME_BUDGET_MS) {
+          console.warn(`[Monitor] Time budget exceeded after ${processedCount}/${pollTargets.length}`);
+          break;
+        }
 
-          // Send progress event
-          await write({
-            type: "progress",
-            restaurant: restaurant.name,
-            index: processedCount,
-            total: pollTargets.length,
-          });
+        const batch = pollTargets.slice(batchStart, batchStart + BATCH_SIZE);
 
-          const lookAhead = daysAhead ?? Math.min(restaurant.advanceDays, 14);
-          const effectiveLookAhead = quiet ? Math.min(lookAhead, 7) : lookAhead;
-          const dates = getForwardDates(effectiveLookAhead);
+        // Send progress for batch
+        await write({
+          type: "progress",
+          restaurant: batch.map((r) => r.name).join(", "),
+          index: processedCount,
+          total: pollTargets.length,
+        });
 
-          const slots = await checkVenueAvailability(
-            restaurant.resyVenueId,
-            restaurant.name,
-            restaurant.resyUrl,
-            dates,
-            partySize,
-            auth?.authToken,
-          );
+        // Check all restaurants in this batch IN PARALLEL
+        const batchResults = await Promise.all(
+          batch.map(async (restaurant) => {
+            const lookAhead = daysAhead ?? Math.min(restaurant.advanceDays, 14);
+            const effectiveLookAhead = quiet ? Math.min(lookAhead, 7) : lookAhead;
+            const dates = getForwardDates(effectiveLookAhead);
 
-          const diff = updateSnapshot(monitorState, restaurant, slots);
-          const serialized: SerializableSlotDiff = {
-            restaurant: diff.restaurant,
-            currentSlots: slots,
-            newSlots: diff.newSlots,
-            droppedSlots: diff.droppedSlots,
-            totalAvailable: diff.totalAvailable,
-            checkedAt: diff.checkedAt,
-          };
+            const slots = await checkVenueAvailability(
+              restaurant.resyVenueId,
+              restaurant.name,
+              restaurant.resyUrl,
+              dates,
+              partySize,
+              auth?.authToken,
+            );
+
+            const diff = updateSnapshot(monitorState, restaurant, slots);
+            return {
+              restaurant: diff.restaurant,
+              currentSlots: slots,
+              newSlots: diff.newSlots,
+              droppedSlots: diff.droppedSlots,
+              totalAvailable: diff.totalAvailable,
+              checkedAt: diff.checkedAt,
+            } as SerializableSlotDiff;
+          }),
+        );
+
+        // Stream each result + activity feed
+        for (const serialized of batchResults) {
           diffs.push(serialized);
           processedCount++;
 
-          // Stream this restaurant's result immediately
           await write({ type: "result", diff: serialized });
+
+          // Activity feed event for top bar
+          if (serialized.totalAvailable > 0) {
+            await write({
+              type: "activity",
+              restaurant: serialized.restaurant.name,
+              slotCount: serialized.totalAvailable,
+              newCount: serialized.newSlots.length,
+            });
+          }
         }
 
-        if (batches.indexOf(batch) < batches.length - 1 && !timedOut) {
-          await batchDelay();
+        // Brief delay between batches (500-800ms)
+        if (batchStart + BATCH_SIZE < pollTargets.length) {
+          await delay(500 + Math.random() * 300);
         }
       }
 
-      // Include cached slots for restaurants NOT checked this poll
+      // Include cached slots for unchecked restaurants
       const checkedIds = new Set(diffs.map((d) => d.restaurant.id));
       for (const restaurant of monitored) {
         if (checkedIds.has(restaurant.id)) continue;
@@ -273,17 +244,14 @@ export async function POST(request: Request) {
       const totalSlots = diffs.reduce((sum, d) => sum + d.totalAvailable, 0);
       const totalNew = diffs.reduce((sum, d) => sum + d.newSlots.length, 0);
       const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
-      console.log(
-        `[Monitor] Poll #${monitorState.pollCount} complete in ${elapsed}s | ${diffs.length} restaurants | ${totalSlots} total slots | ${totalNew} new${timedOut ? " | TIMED OUT" : ""}`,
-      );
+      console.log(`[Monitor] Poll #${monitorState.pollCount} done in ${elapsed}s | ${totalSlots} slots | ${totalNew} new`);
 
-      // ── Send notifications for new slots (skip baseline) ────────────
+      // Notifications
       let notifyResult: { sent: string[]; failed: string[] } | undefined;
       if (!isBaseline) {
         const alerts = diffs
           .filter((d) => d.newSlots.length > 0)
           .map((d) => ({ restaurant: d.restaurant, newSlots: d.newSlots }));
-
         if (alerts.length > 0) {
           const url = new URL(request.url);
           const baseUrl = `${url.protocol}//${url.host}`;
@@ -306,15 +274,12 @@ export async function POST(request: Request) {
       await writer.close();
     };
 
-    // Kick off processing (don't await — the stream handles it)
     processAsync().catch(async (err) => {
       console.error("[Monitor] Stream error:", err);
       try {
         await write({ type: "error", error: err instanceof Error ? err.message : "Unknown error" });
         await writer.close();
-      } catch {
-        // Writer may already be closed
-      }
+      } catch { /* writer closed */ }
     });
 
     return new Response(stream.readable, {
@@ -333,11 +298,6 @@ export async function POST(request: Request) {
   }
 }
 
-/**
- * GET /api/resy-monitor
- *
- * Return current monitor status, recent diffs, and rate limit info.
- */
 export async function GET() {
   const { NextResponse } = await import("next/server");
 

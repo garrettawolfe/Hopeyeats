@@ -13,7 +13,6 @@
 const RESY_API_BASE = "https://api.resy.com";
 
 // The production API key embedded in Resy's frontend JS bundle.
-// Two known keys — VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5 is the more current one.
 const RESY_API_KEY = "VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5";
 
 // ─── Anti-Detection: User-Agent Rotation ─────────────────────────────────────
@@ -44,7 +43,6 @@ function randomDelay(minMs: number, maxMs: number): Promise<void> {
 /** Add gaussian-like jitter to a base delay. Returns ms. */
 function jitteredDelay(baseMs: number, jitterPercent: number = 0.3): number {
   const jitter = baseMs * jitterPercent;
-  // Box-Muller approximation: sum of randoms approaches normal
   const r = (Math.random() + Math.random() + Math.random()) / 3;
   return Math.max(100, baseMs + (r - 0.5) * 2 * jitter);
 }
@@ -53,7 +51,7 @@ function jitteredDelay(baseMs: number, jitterPercent: number = 0.3): number {
 
 interface RateLimitState {
   consecutiveErrors: number;
-  backoffUntil: number; // timestamp ms
+  backoffUntil: number;
   totalRequests: number;
   total429s: number;
   lastRequestAt: number;
@@ -67,21 +65,17 @@ const rateLimitState: RateLimitState = {
   lastRequestAt: 0,
 };
 
-/** Check if we're currently in a backoff period. */
 function isBackedOff(): boolean {
   return Date.now() < rateLimitState.backoffUntil;
 }
 
-/** Calculate exponential backoff delay after a 429. */
 function calculateBackoff(): number {
-  const base = 60_000; // 60 seconds base
+  const base = 60_000;
   const exp = Math.min(rateLimitState.consecutiveErrors, 5);
   const delay = base * Math.pow(2, exp);
-  // Add 0-30% jitter
   return delay + Math.random() * delay * 0.3;
 }
 
-/** Get current rate limit stats for monitoring UI. */
 export function getRateLimitStats() {
   return {
     ...rateLimitState,
@@ -90,30 +84,17 @@ export function getRateLimitStats() {
   };
 }
 
-// ─── Anti-Detection: Request Fingerprint Variation ───────────────────────────
-
-/** Slightly vary lat/long to avoid identical request fingerprints. */
-function randomizedCoords(): { lat: string; long: string } {
-  // NYC area: ~40.71 to 40.78, ~-74.01 to -73.93
-  const lat = 40.71 + Math.random() * 0.07;
-  const long = -74.01 + Math.random() * 0.08;
-  return {
-    lat: lat.toFixed(4),
-    long: long.toFixed(4),
-  };
-}
-
 // ─── Core Types ──────────────────────────────────────────────────────────────
 
 export interface ResySlot {
   date: {
-    start: string; // "2026-04-10 19:00:00"
+    start: string;
     end: string;
   };
   config: {
     id: number;
     token: string;
-    type: string; // "Dining Room", "Bar", "Patio", etc.
+    type: string;
   };
   size: {
     min: number;
@@ -142,12 +123,12 @@ export interface ResyFindResponse {
 }
 
 export interface AvailabilitySlot {
-  id: string; // unique key: venueId-date-time-type
+  id: string;
   venueId: number;
   venueName: string;
-  date: string; // YYYY-MM-DD
-  time: string; // HH:MM
-  dateTime: string; // full datetime string
+  date: string;
+  time: string;
+  dateTime: string;
   tableType: string;
   minParty: number;
   maxParty: number;
@@ -168,13 +149,11 @@ function buildHeaders(authToken?: string): Record<string, string> {
     "User-Agent": randomUserAgent(),
   };
 
-  // Include auth token if available (required by /4/find for many venues)
   if (authToken) {
     headers["X-Resy-Auth-Token"] = authToken;
     headers["X-Resy-Universal-Auth"] = authToken;
   }
 
-  // Randomly include optional headers to vary fingerprint
   if (Math.random() > 0.5) {
     headers["Accept-Encoding"] = "gzip, deflate, br";
   }
@@ -191,7 +170,7 @@ function buildHeaders(authToken?: string): Record<string, string> {
 
 /**
  * Fetch available reservation slots for a venue on a given date.
- * Includes rate limit handling and exponential backoff.
+ * Minimal delay version — caller is responsible for rate limiting.
  */
 export async function findAvailability(
   venueId: number,
@@ -199,25 +178,19 @@ export async function findAvailability(
   partySize: number = 2,
   authToken?: string,
 ): Promise<ResyFindResponse | null> {
-  // Respect backoff period
   if (isBackedOff()) {
     const waitMs = rateLimitState.backoffUntil - Date.now();
-    console.warn(
-      `[Resy] Rate limited — waiting ${Math.round(waitMs / 1000)}s before retry`,
-    );
+    console.warn(`[Resy] Rate limited — waiting ${Math.round(waitMs / 1000)}s`);
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 
-  // Enforce minimum gap between requests (800-2000ms randomized)
+  // Minimal gap: 200-500ms (fast but not hammering)
   const timeSinceLast = Date.now() - rateLimitState.lastRequestAt;
-  const minGap = 800 + Math.random() * 1200;
+  const minGap = 200 + Math.random() * 300;
   if (timeSinceLast < minGap) {
-    await new Promise((resolve) =>
-      setTimeout(resolve, minGap - timeSinceLast),
-    );
+    await new Promise((resolve) => setTimeout(resolve, minGap - timeSinceLast));
   }
 
-  // Use real NYC coordinates — lat=0&long=0 returns "invalid latitude"
   const params = new URLSearchParams({
     venue_id: venueId.toString(),
     day: date,
@@ -227,68 +200,42 @@ export async function findAvailability(
   });
 
   const url = `${RESY_API_BASE}/4/find?${params}`;
-  const hasAuth = !!authToken;
-  console.log(`[Resy] GET /4/find venue=${venueId} date=${date} party=${partySize} auth=${hasAuth}`);
   rateLimitState.lastRequestAt = Date.now();
   rateLimitState.totalRequests++;
 
-  let response = await fetch(url, {
+  const response = await fetch(url, {
     method: "GET",
     headers: buildHeaders(authToken),
   });
 
-  console.log(`[Resy] /4/find venue=${venueId} date=${date} → ${response.status}`);
-
-  // Retry once on 500 (server error) with a brief delay
+  // Resy returns 500 for dates with no availability — don't retry, just skip
   if (response.status === 500) {
-    console.log(`[Resy] Retrying venue=${venueId} date=${date} after 500...`);
-    await randomDelay(300, 800);
-    rateLimitState.totalRequests++;
-    response = await fetch(url, {
-      method: "GET",
-      headers: buildHeaders(authToken),
-    });
-    console.log(`[Resy] Retry venue=${venueId} date=${date} → ${response.status}`);
+    return null;
   }
 
-  // Handle rate limiting with exponential backoff
   if (response.status === 429) {
     rateLimitState.total429s++;
     rateLimitState.consecutiveErrors++;
     const backoff = calculateBackoff();
     rateLimitState.backoffUntil = Date.now() + backoff;
-    console.warn(
-      `[Resy] ⚠ 429 Rate Limited (attempt ${rateLimitState.consecutiveErrors}) — backing off ${Math.round(backoff / 1000)}s`,
-    );
+    console.warn(`[Resy] 429 Rate Limited — backing off ${Math.round(backoff / 1000)}s`);
     return null;
   }
 
-  // Handle other errors
   if (!response.ok) {
     rateLimitState.consecutiveErrors++;
-    const body = await response.text().catch(() => "");
-    console.error(
-      `[Resy] ✗ ${response.status} for venue ${venueId} on ${date}: ${body.slice(0, 300)}`,
-    );
     return null;
   }
 
-  // Success — reset consecutive error count
   rateLimitState.consecutiveErrors = 0;
   const data: ResyFindResponse = await response.json();
-  const slotCount = data.results?.venues?.[0]?.slots?.length ?? 0;
-  console.log(`[Resy] ✓ venue=${venueId} date=${date} → ${slotCount} slots`);
-
   return data;
 }
 
 /**
  * Resolve a venue URL slug to a numeric venue ID via the Resy API.
- * e.g., "don-angie" → 1505
  */
-export async function resolveVenueId(
-  urlSlug: string,
-): Promise<number | null> {
+export async function resolveVenueId(urlSlug: string): Promise<number | null> {
   if (isBackedOff()) {
     await new Promise((resolve) =>
       setTimeout(resolve, rateLimitState.backoffUntil - Date.now()),
@@ -297,7 +244,7 @@ export async function resolveVenueId(
 
   const params = new URLSearchParams({
     url_slug: urlSlug,
-    location_id: "1", // NYC
+    location_id: "1",
   });
 
   const url = `${RESY_API_BASE}/3/venue?${params}`;
@@ -323,12 +270,14 @@ export async function resolveVenueId(
 
 /**
  * Parse raw Resy API response into normalized AvailabilitySlot objects.
+ * resyUrl now includes the correct party size and time for deep-linking.
  */
 export function parseSlots(
   response: ResyFindResponse,
   venueId: number,
   venueName: string,
   resyBaseUrl: string,
+  partySize: number = 2,
 ): AvailabilitySlot[] {
   const venues = response.results?.venues ?? [];
   if (venues.length === 0) return [];
@@ -353,7 +302,7 @@ export function parseSlots(
       minParty: slot.size?.min ?? 1,
       maxParty: slot.size?.max ?? 2,
       configToken: slot.config?.token ?? "",
-      resyUrl: `${resyBaseUrl}?date=${datePart}&seats=${slot.size?.min ?? 2}`,
+      resyUrl: `${resyBaseUrl}?date=${datePart}&seats=${partySize}`,
     };
   });
 }
@@ -363,7 +312,7 @@ export function parseSlots(
 interface CalendarDay {
   date: string;
   inventory: {
-    reservation?: string; // "available" | "sold-out" | null
+    reservation?: string;
   };
 }
 
@@ -374,8 +323,7 @@ interface CalendarResponse {
 
 /**
  * Fetch the venue calendar to discover which dates have availability.
- * Uses the /4/venue/calendar endpoint (undocumented but used by Resy web app).
- * Returns only dates with available inventory, drastically reducing /4/find calls.
+ * Returns only dates with available inventory.
  */
 async function fetchVenueCalendar(
   venueId: number,
@@ -389,11 +337,9 @@ async function fetchVenueCalendar(
   }
 
   const timeSinceLast = Date.now() - rateLimitState.lastRequestAt;
-  const minGap = 800 + Math.random() * 1200;
+  const minGap = 200 + Math.random() * 300;
   if (timeSinceLast < minGap) {
-    await new Promise((resolve) =>
-      setTimeout(resolve, minGap - timeSinceLast),
-    );
+    await new Promise((resolve) => setTimeout(resolve, minGap - timeSinceLast));
   }
 
   const params = new URLSearchParams({
@@ -421,16 +367,12 @@ async function fetchVenueCalendar(
       return [];
     }
 
-    if (!response.ok) {
-      // Calendar endpoint may not exist for all venues — fall back gracefully
-      return [];
-    }
+    if (!response.ok) return [];
 
     rateLimitState.consecutiveErrors = 0;
     const data: CalendarResponse = await response.json();
     const scheduled = data.scheduled ?? [];
 
-    // Return only dates with available inventory
     return scheduled
       .filter((day) => day.inventory?.reservation === "available")
       .map((day) => day.date);
@@ -444,11 +386,8 @@ async function fetchVenueCalendar(
 /**
  * Check availability for a venue across a range of future dates.
  *
- * Two-phase approach (inspired by korbinschulz/resybot-open):
- * 1. Hit /4/venue/calendar to get which dates have inventory (1 API call)
- * 2. Hit /4/find only on dates with availability (N calls, where N << total dates)
- *
- * Falls back to checking all dates if the calendar endpoint fails.
+ * Two-phase: calendar (1 call) → /4/find only on dates with inventory.
+ * Dates are checked in parallel batches of 3 for speed.
  */
 export async function checkVenueAvailability(
   venueId: number,
@@ -460,78 +399,57 @@ export async function checkVenueAvailability(
 ): Promise<AvailabilitySlot[]> {
   if (dates.length === 0) return [];
 
-  // Reset consecutive error counter for each restaurant so failures
-  // on one venue don't cascade and abort checks for the next venue.
   rateLimitState.consecutiveErrors = 0;
 
   const allSlots: AvailabilitySlot[] = [];
   const startDate = dates[0];
   const endDate = dates[dates.length - 1];
 
-  // Phase 1: Calendar check (single request to find which dates have inventory)
+  // Phase 1: Calendar check
   let datesToCheck: string[];
-  const calendarDates = await fetchVenueCalendar(
-    venueId,
-    startDate,
-    endDate,
-    partySize,
-  );
+  const calendarDates = await fetchVenueCalendar(venueId, startDate, endDate, partySize);
 
   if (calendarDates.length > 0) {
     datesToCheck = calendarDates;
-    console.log(
-      `[Resy] ${venueName} (${venueId}): calendar → ${calendarDates.length}/${dates.length} dates with inventory`,
-    );
   } else {
-    datesToCheck = dates.slice(0, Math.min(dates.length, 10));
-    console.log(
-      `[Resy] ${venueName} (${venueId}): calendar empty/failed, checking ${datesToCheck.length} dates`,
-    );
+    // Calendar empty/failed — check fewer dates to stay fast
+    datesToCheck = dates.slice(0, Math.min(dates.length, 5));
   }
 
-  // Phase 2: Get detailed slots for available dates
-  // Shuffle to avoid predictable sequential patterns
-  const shuffledDates = [...datesToCheck].sort(() => Math.random() - 0.5);
+  // Phase 2: Check dates in parallel batches of 3
+  for (let i = 0; i < datesToCheck.length; i += 3) {
+    if (rateLimitState.consecutiveErrors >= 3) break;
 
-  for (const date of shuffledDates) {
-    if (rateLimitState.consecutiveErrors >= 3) {
-      console.warn(
-        `[Resy] Too many consecutive errors for ${venueName} — aborting remaining dates`,
-      );
-      break;
-    }
-
-    try {
-      const response = await findAvailability(venueId, date, partySize, authToken);
-      if (response) {
-        const slots = parseSlots(response, venueId, venueName, resyBaseUrl);
-        allSlots.push(...slots);
-      }
-    } catch (err) {
-      console.error(
-        `[Resy] Error checking ${venueName} on ${date}:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
-
-    // Randomized delay between date queries (1-3s with jitter)
-    await new Promise((resolve) =>
-      setTimeout(resolve, jitteredDelay(1500, 0.4)),
+    const batch = datesToCheck.slice(i, i + 3);
+    const results = await Promise.all(
+      batch.map(async (date) => {
+        try {
+          const response = await findAvailability(venueId, date, partySize, authToken);
+          if (response) {
+            return parseSlots(response, venueId, venueName, resyBaseUrl, partySize);
+          }
+          return [];
+        } catch {
+          return [];
+        }
+      }),
     );
-  }
 
-  console.log(
-    `[Resy] ${venueName} (${venueId}): done — ${allSlots.length} total slots across ${datesToCheck.length} dates (${rateLimitState.consecutiveErrors} errors)`,
-  );
+    for (const slots of results) {
+      allSlots.push(...slots);
+    }
+
+    // Brief delay between batches (300-600ms)
+    if (i + 3 < datesToCheck.length) {
+      await new Promise((resolve) => setTimeout(resolve, 300 + Math.random() * 300));
+    }
+  }
 
   return allSlots;
 }
 
 // ─── Date Helpers ────────────────────────────────────────────────────────────
 
-/**
- * Generate an array of date strings (YYYY-MM-DD) from today forward.
- */
 export function getForwardDates(daysAhead: number): string[] {
   const dates: string[] = [];
   const today = new Date();
@@ -545,29 +463,17 @@ export function getForwardDates(daysAhead: number): string[] {
   return dates;
 }
 
-/**
- * Check if current time is in the "quiet hours" window (2-7 AM ET).
- * During quiet hours, polling should be reduced or paused.
- */
 export function isQuietHours(): boolean {
   const now = new Date();
-  // Convert to ET (approximate — doesn't handle DST perfectly)
   const etHour = (now.getUTCHours() - 5 + 24) % 24;
   return etHour >= 2 && etHour < 7;
 }
 
-/**
- * Get recommended poll interval based on time of day.
- * Higher frequency during peak booking hours, lower overnight.
- */
 export function getRecommendedInterval(): number {
   const now = new Date();
   const etHour = (now.getUTCHours() - 5 + 24) % 24;
 
-  // Peak booking hours: 8-10 AM ET (when most restaurants release)
   if (etHour >= 8 && etHour < 10) return 30;
-  // Active hours: 10 AM - midnight ET
   if (etHour >= 10 || etHour < 1) return 60;
-  // Quiet hours: 1-8 AM ET
   return 300;
 }
