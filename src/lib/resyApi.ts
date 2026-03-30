@@ -184,9 +184,9 @@ export async function findAvailability(
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 
-  // Minimal gap: 200-500ms (fast but not hammering)
+  // Gap between requests: 500-1000ms to avoid Resy IP blocks
   const timeSinceLast = Date.now() - rateLimitState.lastRequestAt;
-  const minGap = 200 + Math.random() * 300;
+  const minGap = 500 + Math.random() * 500;
   if (timeSinceLast < minGap) {
     await new Promise((resolve) => setTimeout(resolve, minGap - timeSinceLast));
   }
@@ -208,8 +208,15 @@ export async function findAvailability(
     headers: buildHeaders(authToken),
   });
 
-  // Resy returns 500 for dates with no availability — don't retry, just skip
+  // Resy returns 500 for dates with no availability, but track consecutive 500s
+  // to detect IP-level blocks (all 500s = blocked, not just "no availability")
   if (response.status === 500) {
+    rateLimitState.consecutiveErrors++;
+    if (rateLimitState.consecutiveErrors >= 10) {
+      const backoff = calculateBackoff();
+      rateLimitState.backoffUntil = Date.now() + backoff;
+      console.warn(`[Resy] ${rateLimitState.consecutiveErrors} consecutive 500s — likely IP blocked. Backing off ${Math.round(backoff / 1000)}s`);
+    }
     return null;
   }
 
@@ -330,6 +337,7 @@ async function fetchVenueCalendar(
   startDate: string,
   endDate: string,
   partySize: number,
+  authToken?: string,
 ): Promise<string[]> {
   if (isBackedOff()) {
     const waitMs = rateLimitState.backoffUntil - Date.now();
@@ -337,7 +345,7 @@ async function fetchVenueCalendar(
   }
 
   const timeSinceLast = Date.now() - rateLimitState.lastRequestAt;
-  const minGap = 200 + Math.random() * 300;
+  const minGap = 500 + Math.random() * 500;
   if (timeSinceLast < minGap) {
     await new Promise((resolve) => setTimeout(resolve, minGap - timeSinceLast));
   }
@@ -356,7 +364,7 @@ async function fetchVenueCalendar(
   try {
     const response = await fetch(url, {
       method: "GET",
-      headers: buildHeaders(),
+      headers: buildHeaders(authToken),
     });
 
     if (response.status === 429) {
@@ -364,6 +372,11 @@ async function fetchVenueCalendar(
       rateLimitState.consecutiveErrors++;
       const backoff = calculateBackoff();
       rateLimitState.backoffUntil = Date.now() + backoff;
+      return [];
+    }
+
+    if (response.status === 500) {
+      rateLimitState.consecutiveErrors++;
       return [];
     }
 
@@ -399,15 +412,13 @@ export async function checkVenueAvailability(
 ): Promise<AvailabilitySlot[]> {
   if (dates.length === 0) return [];
 
-  rateLimitState.consecutiveErrors = 0;
-
   const allSlots: AvailabilitySlot[] = [];
   const startDate = dates[0];
   const endDate = dates[dates.length - 1];
 
-  // Phase 1: Calendar check
+  // Phase 1: Calendar check (pass auth token)
   let datesToCheck: string[];
-  const calendarDates = await fetchVenueCalendar(venueId, startDate, endDate, partySize);
+  const calendarDates = await fetchVenueCalendar(venueId, startDate, endDate, partySize, authToken);
 
   if (calendarDates.length > 0) {
     datesToCheck = calendarDates;
@@ -416,16 +427,20 @@ export async function checkVenueAvailability(
     datesToCheck = dates.slice(0, Math.min(dates.length, 5));
   }
 
-  // Phase 2: Check dates in parallel batches of 3
-  for (let i = 0; i < datesToCheck.length; i += 3) {
-    if (rateLimitState.consecutiveErrors >= 3) break;
+  // Phase 2: Check dates in parallel batches of 2
+  for (let i = 0; i < datesToCheck.length; i += 2) {
+    if (rateLimitState.consecutiveErrors >= 8) {
+      console.warn(`[Resy] Too many errors (${rateLimitState.consecutiveErrors}), stopping venue ${venueName}`);
+      break;
+    }
 
-    const batch = datesToCheck.slice(i, i + 3);
+    const batch = datesToCheck.slice(i, i + 2);
     const results = await Promise.all(
       batch.map(async (date) => {
         try {
           const response = await findAvailability(venueId, date, partySize, authToken);
           if (response) {
+            rateLimitState.consecutiveErrors = 0; // Reset on success
             return parseSlots(response, venueId, venueName, resyBaseUrl, partySize);
           }
           return [];
@@ -439,9 +454,9 @@ export async function checkVenueAvailability(
       allSlots.push(...slots);
     }
 
-    // Brief delay between batches (300-600ms)
-    if (i + 3 < datesToCheck.length) {
-      await new Promise((resolve) => setTimeout(resolve, 300 + Math.random() * 300));
+    // Delay between batches (500-1000ms)
+    if (i + 2 < datesToCheck.length) {
+      await new Promise((resolve) => setTimeout(resolve, 500 + Math.random() * 500));
     }
   }
 

@@ -28,7 +28,7 @@ let monitorState: MonitorState = createMonitorState();
 const venueIdCache = new Map<string, number>();
 let notificationConfig: NotificationConfig = {};
 let rotationIndex = 0;
-const RESTAURANTS_PER_POLL = 16;
+const RESTAURANTS_PER_POLL = 10;
 
 /** Delay helper */
 function delay(ms: number): Promise<void> {
@@ -152,8 +152,8 @@ export async function POST(request: Request) {
       const TIME_BUDGET_MS = 55_000;
       let processedCount = 0;
 
-      // Process in parallel batches of 3 restaurants at a time
-      const BATCH_SIZE = quiet ? 2 : 3;
+      // Process in batches of 2 restaurants at a time (gentler on Resy API)
+      const BATCH_SIZE = quiet ? 1 : 2;
 
       for (let batchStart = 0; batchStart < pollTargets.length; batchStart += BATCH_SIZE) {
         if (Date.now() - pollStart > TIME_BUDGET_MS) {
@@ -217,9 +217,9 @@ export async function POST(request: Request) {
           }
         }
 
-        // Brief delay between batches (500-800ms)
+        // Delay between restaurant batches (1-2s)
         if (batchStart + BATCH_SIZE < pollTargets.length) {
-          await delay(500 + Math.random() * 300);
+          await delay(1000 + Math.random() * 1000);
         }
       }
 
@@ -249,7 +249,9 @@ export async function POST(request: Request) {
       const totalSlots = diffs.reduce((sum, d) => sum + d.totalAvailable, 0);
       const totalNew = diffs.reduce((sum, d) => sum + d.newSlots.length, 0);
       const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
-      console.log(`[Poll #${monitorState.pollCount}] Done ${elapsed}s | ${totalSlots} slots | ${totalNew} new`);
+      const rlStats = getRateLimitStats();
+      const rlSuffix = rlStats.consecutiveErrors > 0 ? ` | errors=${rlStats.consecutiveErrors}` : "";
+      console.log(`[Poll #${monitorState.pollCount}] Done ${elapsed}s | ${totalSlots} slots | ${totalNew} new${rlSuffix}`);
 
       // Notifications
       let notifyResult: { sent: string[]; failed: string[] } | undefined;
