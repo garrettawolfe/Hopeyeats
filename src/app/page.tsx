@@ -177,6 +177,11 @@ export default function Home() {
   }, [settings]);
 
   const pollInFlight = useRef(false);
+  // Use refs so the poll callback always reads latest auth/settings without re-creating
+  const resyAuthRef = useRef(resyAuth);
+  resyAuthRef.current = resyAuth;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   const poll = useCallback(async () => {
     if (monitoredIds.size === 0) return;
@@ -185,6 +190,9 @@ export default function Home() {
     setIsPolling(true);
     setScanProgress(null);
     setActivityFeed([]);
+
+    const currentAuth = resyAuthRef.current;
+    const currentSettings = settingsRef.current;
 
     try {
       const controller = new AbortController();
@@ -195,10 +203,10 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           restaurantIds: Array.from(monitoredIds),
-          partySize: settings?.partySize ?? 2,
+          partySize: currentSettings?.partySize ?? 2,
           resolveIds: true,
           notifications: buildNotificationConfig(),
-          authToken: resyAuth?.authToken,
+          authToken: currentAuth?.authToken,
         }),
         signal: controller.signal,
       });
@@ -318,8 +326,10 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monitoredIds, settings, resyAuth, buildNotificationConfig]);
 
+  // Wait for BOTH settings AND auth to resolve before starting polls
+  // resyAuth starts as null, becomes { authenticated: true/false } once resolved
   useEffect(() => {
-    if (!settings) return;
+    if (!settings || resyAuth === null) return; // auth not yet resolved
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission();
     }
@@ -331,7 +341,7 @@ export default function Home() {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings !== null]);
+  }, [settings !== null, resyAuth !== null]);
 
   const handleBook = async (slot: AvailabilitySlot) => {
     setBookingInProgress(slot.id);
