@@ -20,7 +20,7 @@ export async function POST(request: Request) {
 
     // Option 1: Direct token auth (preferred — bypasses Resy's login bot protection)
     if (authToken) {
-      console.log("[Auth] Validating raw auth token...");
+      console.log("[Auth] Validating token...");
       const result = await setAuthFromToken(authToken);
 
       if ("error" in result) {
@@ -45,7 +45,7 @@ export async function POST(request: Request) {
       );
     }
 
-    console.log(`[Auth] Attempting email/password login for ${email}...`);
+    console.log(`[Auth] Email login: ${email}`);
     const auth = await resyLogin(email, password);
     if (!auth) {
       return NextResponse.json(

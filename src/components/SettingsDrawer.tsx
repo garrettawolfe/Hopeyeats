@@ -12,16 +12,14 @@ export interface AppSettings {
   // Resy credentials
   resyEmail: string;
   resyPassword: string;
-  // Persisted auth token (survives page reload)
   resyAuthToken: string;
   // Dining preferences
   partySize: number;
   preferredDays: string[];
-  // Per-day time windows (key = day name like "wednesday")
   dayTimeWindows: Record<string, DayTimeWindow>;
-  // Legacy single window (kept for migration, unused if dayTimeWindows set)
-  timeWindowStart: string;
-  timeWindowEnd: string;
+  // Per-user persistent state
+  autoBookIds: string[];
+  monitoredIds: string[];
   // Notification
   notifyEmail: string;
   gmailUser: string;
@@ -44,16 +42,14 @@ const DEFAULT_SETTINGS: AppSettings = {
   partySize: 2,
   preferredDays: ["wednesday", "thursday", "friday", "saturday"],
   dayTimeWindows: DEFAULT_DAY_TIME_WINDOWS,
-  timeWindowStart: "",
-  timeWindowEnd: "",
+  autoBookIds: [],
+  monitoredIds: [],
   notifyEmail: "",
   gmailUser: "",
   gmailAppPassword: "",
   smsPhone: "",
   smsCarrier: "verizon",
 };
-
-const STORAGE_KEY = "hopeyeats_v2_settings";
 
 const DAYS = [
   { key: "monday", label: "Mon" },
@@ -65,26 +61,57 @@ const DAYS = [
   { key: "sunday", label: "Sun" },
 ];
 
-// Bookmarklet: tries multiple methods to find the Resy auth token
-// 1. document.cookie (if not httpOnly)
-// 2. Resy's own localStorage/sessionStorage keys
-// 3. Makes an API call with credentials to extract from response
-const BOOKMARKLET_CODE = `javascript:void((function(){try{var t='';var c=document.cookie.split(';').map(function(x){return x.trim()}).find(function(x){return x.startsWith('authToken=')});if(c){t=decodeURIComponent(c.split('=').slice(1).join('='))}if(!t){try{var keys=['authToken','auth_token','resy_auth_token'];for(var i=0;i<keys.length;i++){var v=localStorage.getItem(keys[i])||sessionStorage.getItem(keys[i]);if(v){t=v;break}}}catch(e){}}if(!t){try{var x=new XMLHttpRequest();x.open('GET','https://api.resy.com/2/user',false);x.setRequestHeader('Authorization','ResyAPI api_key="VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5"');x.withCredentials=true;x.send();if(x.status===200){var d=JSON.parse(x.responseText);t=d.token||''}}catch(e){}}if(t){window.prompt('Resy auth token (Cmd+C to copy):',t)}else{alert('Could not find token automatically.\\n\\nManual method:\\n1. Open DevTools (F12)\\n2. Go to Network tab\\n3. Click any page on resy.com\\n4. Find a request to api.resy.com\\n5. Copy the x-resy-auth-token header value')}}catch(e){alert('Error: '+e.message)}})())`;
+// --- Multi-user profile storage ---
 
-interface Props {
-  open: boolean;
-  onClose: () => void;
-  settings: AppSettings;
-  onSettingsChange: (s: AppSettings) => void;
-  resyAuth: { authenticated: boolean; firstName?: string; lastName?: string; authToken?: string } | null;
-  onResyLogin: (email: string, password: string) => Promise<true | string>;
-  onResyTokenAuth: (token: string) => Promise<true | string>;
-  onResyLogout: () => void;
+const PROFILES_KEY = "hopeyeats_profiles"; // string[] of profile names
+const ACTIVE_PROFILE_KEY = "hopeyeats_active_profile"; // current profile name
+
+function profileStorageKey(name: string): string {
+  return `hopeyeats_profile_${name.toLowerCase().replace(/\s+/g, "_")}`;
 }
 
-export function loadSettings(): AppSettings {
+export function getProfiles(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(PROFILES_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function getActiveProfile(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(ACTIVE_PROFILE_KEY);
+}
+
+export function setActiveProfile(name: string): void {
+  localStorage.setItem(ACTIVE_PROFILE_KEY, name);
+}
+
+export function addProfile(name: string): void {
+  const profiles = getProfiles();
+  if (!profiles.includes(name)) {
+    profiles.push(name);
+    localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+  }
+}
+
+export function deleteProfile(name: string): void {
+  const profiles = getProfiles().filter((p) => p !== name);
+  localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+  localStorage.removeItem(profileStorageKey(name));
+  if (getActiveProfile() === name) {
+    localStorage.removeItem(ACTIVE_PROFILE_KEY);
+  }
+}
+
+export function loadSettings(profileName?: string): AppSettings {
   if (typeof window === "undefined") return DEFAULT_SETTINGS;
-  const stored = localStorage.getItem(STORAGE_KEY);
+  const name = profileName ?? getActiveProfile();
+  if (!name) return DEFAULT_SETTINGS;
+
+  const stored = localStorage.getItem(profileStorageKey(name));
   if (stored) {
     try {
       return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
@@ -95,8 +122,32 @@ export function loadSettings(): AppSettings {
   return DEFAULT_SETTINGS;
 }
 
-export function saveSettings(s: AppSettings): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+export function saveSettings(s: AppSettings, profileName?: string): void {
+  const name = profileName ?? getActiveProfile();
+  if (!name) return;
+  localStorage.setItem(profileStorageKey(name), JSON.stringify(s));
+}
+
+// --- Bookmarklet ---
+
+const BOOKMARKLET_CODE = `javascript:void((function(){try{var t='';var c=document.cookie.split(';').map(function(x){return x.trim()}).find(function(x){return x.startsWith('authToken=')});if(c){t=decodeURIComponent(c.split('=').slice(1).join('='))}if(!t){try{var keys=['authToken','auth_token','resy_auth_token'];for(var i=0;i<keys.length;i++){var v=localStorage.getItem(keys[i])||sessionStorage.getItem(keys[i]);if(v){t=v;break}}}catch(e){}}if(!t){try{var x=new XMLHttpRequest();x.open('GET','https://api.resy.com/2/user',false);x.setRequestHeader('Authorization','ResyAPI api_key="VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5"');x.withCredentials=true;x.send();if(x.status===200){var d=JSON.parse(x.responseText);t=d.token||''}}catch(e){}}if(t){window.prompt('Resy auth token (Cmd+C to copy):',t)}else{alert('Could not find token automatically.\\n\\nManual method:\\n1. Open DevTools (F12)\\n2. Go to Network tab\\n3. Click any page on resy.com\\n4. Find a request to api.resy.com\\n5. Copy the x-resy-auth-token header value')}}catch(e){alert('Error: '+e.message)}})())`;
+
+// --- Component ---
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+  settings: AppSettings;
+  onSettingsChange: (s: AppSettings) => void;
+  resyAuth: { authenticated: boolean; firstName?: string; lastName?: string; authToken?: string } | null;
+  onResyLogin: (email: string, password: string) => Promise<true | string>;
+  onResyTokenAuth: (token: string) => Promise<true | string>;
+  onResyLogout: () => void;
+  activeProfile: string | null;
+  profiles: string[];
+  onSwitchProfile: (name: string) => void;
+  onCreateProfile: (name: string) => void;
+  onDeleteProfile: (name: string) => void;
 }
 
 export default function SettingsDrawer({
@@ -108,6 +159,11 @@ export default function SettingsDrawer({
   onResyLogin,
   onResyTokenAuth,
   onResyLogout,
+  activeProfile,
+  profiles,
+  onSwitchProfile,
+  onCreateProfile,
+  onDeleteProfile,
 }: Props) {
   const [local, setLocal] = useState<AppSettings>(settings);
   const [loginLoading, setLoginLoading] = useState(false);
@@ -115,7 +171,8 @@ export default function SettingsDrawer({
   const [showPassword, setShowPassword] = useState(false);
   const [authMode, setAuthMode] = useState<"token" | "password">("token");
   const [tokenInput, setTokenInput] = useState(settings.resyAuthToken || "");
-  const [bookmarkletCopied, setBookmarkletCopied] = useState(false);
+  const [newProfileName, setNewProfileName] = useState("");
+  const [showNewProfile, setShowNewProfile] = useState(false);
 
   useEffect(() => {
     setLocal(settings);
@@ -142,11 +199,7 @@ export default function SettingsDrawer({
     setLoginLoading(true);
     setLoginError(null);
     const result = await onResyLogin(local.resyEmail, local.resyPassword);
-    if (typeof result === "string") {
-      setLoginError(result);
-    } else if (!result) {
-      setLoginError("Login failed — check your credentials");
-    }
+    if (typeof result === "string") setLoginError(result);
     setLoginLoading(false);
   };
 
@@ -159,57 +212,103 @@ export default function SettingsDrawer({
     if (typeof result === "string") {
       setLoginError(result);
     } else {
-      // Persist the token in settings so it survives page reload
       update({ resyAuthToken: token });
     }
     setLoginLoading(false);
   };
 
+  const handleCreateProfile = () => {
+    const name = newProfileName.trim();
+    if (!name) return;
+    onCreateProfile(name);
+    setNewProfileName("");
+    setShowNewProfile(false);
+  };
+
   return (
     <>
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/40 z-40 backdrop-blur-sm"
-        onClick={onClose}
-      />
+      <div className="fixed inset-0 bg-black/40 z-40 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Drawer */}
       <div className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-white z-50 shadow-2xl overflow-y-auto">
-        <div className="p-6">
+        <div className="p-4 sm:p-6">
           {/* Header */}
-          <div className="flex items-center justify-between mb-8">
-            <h2 className="text-xl font-semibold text-charcoal">Settings</h2>
-            <button
-              onClick={onClose}
-              className="p-2 hover:bg-stone-100 rounded-lg transition-colors"
-            >
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-lg font-semibold text-charcoal">Settings</h2>
+            <button onClick={onClose} className="p-2 hover:bg-stone-100 rounded-lg transition-colors">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </div>
 
+          {/* User Profile Switcher */}
+          <section className="mb-6">
+            <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider mb-2">Profile</h3>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {profiles.map((p) => (
+                <div key={p} className="flex items-center gap-1">
+                  <button
+                    onClick={() => onSwitchProfile(p)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      activeProfile === p
+                        ? "bg-charcoal text-white"
+                        : "bg-stone-100 text-stone-500 hover:bg-stone-200"
+                    }`}
+                  >
+                    {p}
+                  </button>
+                  {activeProfile === p && profiles.length > 1 && (
+                    <button
+                      onClick={() => onDeleteProfile(p)}
+                      className="text-stone-300 hover:text-red-400 text-xs"
+                      title="Delete profile"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              ))}
+              {showNewProfile ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={newProfileName}
+                    onChange={(e) => setNewProfileName(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleCreateProfile()}
+                    placeholder="Name"
+                    autoFocus
+                    className="w-24 px-2 py-1.5 border border-stone-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-gold/50"
+                  />
+                  <button onClick={handleCreateProfile} className="text-emerald-500 text-xs font-medium">Add</button>
+                  <button onClick={() => setShowNewProfile(false)} className="text-stone-400 text-xs">Cancel</button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowNewProfile(true)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium border border-dashed border-stone-300 text-stone-400 hover:bg-stone-50"
+                >
+                  + New
+                </button>
+              )}
+            </div>
+          </section>
+
           {/* Resy Account */}
-          <section className="mb-8">
-            <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider mb-3">
-              Resy Account
-            </h3>
+          <section className="mb-6">
+            <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider mb-2">Resy Account</h3>
             {resyAuth?.authenticated ? (
-              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-emerald-800">
-                      Logged in as {resyAuth.firstName} {resyAuth.lastName}
+                      {resyAuth.firstName} {resyAuth.lastName}
                     </p>
-                    <p className="text-xs text-emerald-600 mt-0.5">
-                      Auto-booking enabled
-                    </p>
+                    <p className="text-xs text-emerald-600 mt-0.5">Auto-booking enabled</p>
                   </div>
                   <button
-                    onClick={() => {
-                      update({ resyAuthToken: "" });
-                      onResyLogout();
-                    }}
+                    onClick={() => { update({ resyAuthToken: "" }); onResyLogout(); }}
                     className="text-xs text-stone-400 hover:text-red-500 underline"
                   >
                     Logout
@@ -218,7 +317,6 @@ export default function SettingsDrawer({
               </div>
             ) : (
               <div className="space-y-3">
-                {/* Auth mode toggle */}
                 <div className="flex gap-1 bg-stone-100 p-0.5 rounded-lg">
                   <button
                     onClick={() => setAuthMode("token")}
@@ -244,8 +342,8 @@ export default function SettingsDrawer({
                       placeholder="Paste your Resy auth token here..."
                       value={tokenInput}
                       onChange={(e) => setTokenInput(e.target.value)}
-                      rows={3}
-                      className="w-full px-4 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50 font-mono text-xs resize-none"
+                      rows={2}
+                      className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50 font-mono text-[11px] resize-none"
                     />
                     <button
                       onClick={handleTokenAuth}
@@ -254,15 +352,12 @@ export default function SettingsDrawer({
                     >
                       {loginLoading ? "Validating..." : "Connect with Token"}
                     </button>
-
-                    {/* Bookmarklet + instructions */}
                     <div className="bg-stone-50 rounded-xl p-3 space-y-2">
-                      <p className="text-[11px] font-medium text-charcoal">Easiest way — use this bookmarklet:</p>
+                      <p className="text-[11px] font-medium text-charcoal">Get your token:</p>
                       <div className="flex items-center gap-2">
                         <a
                           href={BOOKMARKLET_CODE}
                           onClick={(e) => e.preventDefault()}
-                          onDragStart={() => {}}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-charcoal text-white rounded-lg text-xs font-medium cursor-grab active:cursor-grabbing"
                           title="Drag this to your bookmarks bar"
                         >
@@ -271,21 +366,15 @@ export default function SettingsDrawer({
                           </svg>
                           Get Resy Token
                         </a>
-                        <span className="text-[10px] text-stone-400">
-                          Drag to bookmarks bar
-                        </span>
+                        <span className="text-[10px] text-stone-400">Drag to bookmarks bar</span>
                       </div>
-                      <p className="text-[10px] text-stone-500">
-                        Then visit <a href="https://resy.com" target="_blank" rel="noopener noreferrer" className="underline">resy.com</a>, log in, and click the bookmarklet to copy your token.
-                      </p>
-
                       <div className="border-t border-stone-200 pt-2 mt-2">
                         <p className="text-[11px] font-medium text-charcoal mb-1">Or manually:</p>
                         <ol className="text-[10px] text-stone-500 space-y-0.5 list-decimal pl-3.5">
                           <li>Go to <a href="https://resy.com" target="_blank" rel="noopener noreferrer" className="underline text-stone-600">resy.com</a> and log in</li>
-                          <li>Open DevTools (F12 or Cmd+Opt+I) → <strong>Application</strong> tab</li>
-                          <li>Under <strong>Cookies</strong> → resy.com, find <strong>authToken</strong></li>
-                          <li>Copy the value and paste above</li>
+                          <li>Open DevTools (F12) &rarr; <strong>Network</strong> tab</li>
+                          <li>Click around, find a request to api.resy.com</li>
+                          <li>Copy the <strong>x-resy-auth-token</strong> header value</li>
                         </ol>
                       </div>
                     </div>
@@ -297,7 +386,7 @@ export default function SettingsDrawer({
                       placeholder="Resy email"
                       value={local.resyEmail}
                       onChange={(e) => update({ resyEmail: e.target.value })}
-                      className="w-full px-4 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
+                      className="w-full px-3 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
                     />
                     <div className="relative">
                       <input
@@ -305,7 +394,7 @@ export default function SettingsDrawer({
                         placeholder="Resy password"
                         value={local.resyPassword}
                         onChange={(e) => update({ resyPassword: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50 pr-16"
+                        className="w-full px-3 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50 pr-16"
                       />
                       <button
                         type="button"
@@ -315,19 +404,15 @@ export default function SettingsDrawer({
                         {showPassword ? "Hide" : "Show"}
                       </button>
                     </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={handleLogin}
-                        disabled={loginLoading || !local.resyEmail || !local.resyPassword}
-                        className="flex-1 py-2.5 bg-charcoal text-white rounded-xl text-sm font-medium hover:bg-charcoal/90 transition-colors disabled:opacity-40"
-                      >
-                        {loginLoading ? "Logging in..." : "Connect Resy Account"}
-                      </button>
-                    </div>
+                    <button
+                      onClick={handleLogin}
+                      disabled={loginLoading || !local.resyEmail || !local.resyPassword}
+                      className="w-full py-2.5 bg-charcoal text-white rounded-xl text-sm font-medium hover:bg-charcoal/90 transition-colors disabled:opacity-40"
+                    >
+                      {loginLoading ? "Logging in..." : "Connect Resy Account"}
+                    </button>
                     <div className="flex items-center justify-between">
-                      <p className="text-[10px] text-amber-500">
-                        Resy may block automated login. Use Auth Token if this fails.
-                      </p>
+                      <p className="text-[10px] text-amber-500">Resy may block automated login. Use Auth Token if this fails.</p>
                       <a
                         href="https://resy.com/password-reset"
                         target="_blank"
@@ -339,28 +424,23 @@ export default function SettingsDrawer({
                     </div>
                   </>
                 )}
-
-                {loginError && (
-                  <p className="text-xs text-red-500">{loginError}</p>
-                )}
+                {loginError && <p className="text-xs text-red-500">{loginError}</p>}
               </div>
             )}
           </section>
 
           {/* Dining Preferences */}
-          <section className="mb-8">
-            <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider mb-3">
-              Dining Preferences
-            </h3>
+          <section className="mb-6">
+            <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider mb-2">Dining Preferences</h3>
             <div className="space-y-4">
               <div>
                 <label className="text-xs text-stone-500 mb-1.5 block">Party Size</label>
-                <div className="flex gap-2">
+                <div className="flex gap-1.5">
                   {[1, 2, 3, 4, 5, 6].map((n) => (
                     <button
                       key={n}
                       onClick={() => update({ partySize: n })}
-                      className={`w-10 h-10 rounded-lg text-sm font-medium transition-colors ${
+                      className={`w-9 h-9 rounded-lg text-sm font-medium transition-colors ${
                         local.partySize === n
                           ? "bg-charcoal text-white"
                           : "bg-stone-100 text-stone-500 hover:bg-stone-200"
@@ -374,12 +454,12 @@ export default function SettingsDrawer({
 
               <div>
                 <label className="text-xs text-stone-500 mb-1.5 block">Preferred Days</label>
-                <div className="flex gap-1.5">
+                <div className="flex gap-1">
                   {DAYS.map((d) => (
                     <button
                       key={d.key}
                       onClick={() => toggleDay(d.key)}
-                      className={`flex-1 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                      className={`flex-1 py-1.5 rounded-lg text-[11px] font-medium transition-colors ${
                         local.preferredDays.includes(d.key)
                           ? "bg-charcoal text-white"
                           : "bg-stone-100 text-stone-400 hover:bg-stone-200"
@@ -392,31 +472,31 @@ export default function SettingsDrawer({
               </div>
 
               <div>
-                <label className="text-xs text-stone-500 mb-2 block">Time Windows per Day</label>
-                <div className="space-y-2">
+                <label className="text-xs text-stone-500 mb-2 block">Time Windows</label>
+                <div className="space-y-1.5">
                   {DAYS.filter((d) => local.preferredDays.includes(d.key)).map((d) => {
-                    const window = local.dayTimeWindows?.[d.key] || { start: "18:00", end: "21:30" };
+                    const tw = local.dayTimeWindows?.[d.key] || { start: "18:00", end: "21:30" };
                     return (
-                      <div key={d.key} className="flex items-center gap-2">
-                        <span className="text-xs font-medium text-charcoal w-10">{d.label}</span>
+                      <div key={d.key} className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-medium text-charcoal w-8">{d.label}</span>
                         <input
                           type="time"
-                          value={window.start}
+                          value={tw.start}
                           onChange={(e) => {
-                            const windows = { ...local.dayTimeWindows, [d.key]: { ...window, start: e.target.value } };
+                            const windows = { ...local.dayTimeWindows, [d.key]: { ...tw, start: e.target.value } };
                             update({ dayTimeWindows: windows });
                           }}
-                          className="flex-1 px-2 py-1.5 border border-stone-200 rounded-lg text-xs"
+                          className="flex-1 px-1.5 py-1 border border-stone-200 rounded text-[11px]"
                         />
-                        <span className="text-xs text-stone-400">to</span>
+                        <span className="text-[10px] text-stone-400">-</span>
                         <input
                           type="time"
-                          value={window.end}
+                          value={tw.end}
                           onChange={(e) => {
-                            const windows = { ...local.dayTimeWindows, [d.key]: { ...window, end: e.target.value } };
+                            const windows = { ...local.dayTimeWindows, [d.key]: { ...tw, end: e.target.value } };
                             update({ dayTimeWindows: windows });
                           }}
-                          className="flex-1 px-2 py-1.5 border border-stone-200 rounded-lg text-xs"
+                          className="flex-1 px-1.5 py-1 border border-stone-200 rounded text-[11px]"
                         />
                       </div>
                     );
@@ -426,75 +506,63 @@ export default function SettingsDrawer({
             </div>
           </section>
 
-          {/* Auto-Book Info */}
-          <section className="mb-8">
-            <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider mb-3">
-              Auto-Book
-            </h3>
-            <div className="p-4 bg-stone-50 rounded-xl">
-              <p className="text-sm text-stone-600">
-                Auto-book is configured <strong>per restaurant</strong>. Click the lightning bolt icon on any restaurant card to enable it.
-              </p>
-              <p className="text-xs text-stone-400 mt-2">
-                When enabled, the bot will automatically book the first available slot at that restaurant. It checks your existing Resy reservations to avoid conflicts (no double-booking within 2 hours).
+          {/* Auto-Book */}
+          <section className="mb-6">
+            <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider mb-2">Auto-Book</h3>
+            <div className="p-3 bg-stone-50 rounded-xl">
+              <p className="text-xs text-stone-600">
+                Click the lightning bolt on any restaurant card to enable auto-book for that restaurant.
               </p>
               {!resyAuth?.authenticated && (
-                <p className="text-xs text-amber-600 mt-2">
-                  Connect your Resy account above to enable auto-booking.
-                </p>
+                <p className="text-xs text-amber-600 mt-1.5">Connect Resy account above to enable.</p>
               )}
             </div>
           </section>
 
           {/* Notifications */}
-          <section className="mb-8">
-            <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider mb-3">
-              Email Notifications
-            </h3>
-            <div className="space-y-3">
+          <section className="mb-6">
+            <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider mb-2">Notifications</h3>
+            <div className="space-y-2">
               <input
                 type="email"
                 placeholder="Notification email"
                 value={local.notifyEmail}
                 onChange={(e) => update({ notifyEmail: e.target.value })}
-                className="w-full px-4 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
+                className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
               />
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2">
                 <input
                   type="email"
                   placeholder="Gmail (sender)"
                   value={local.gmailUser}
                   onChange={(e) => update({ gmailUser: e.target.value })}
-                  className="w-full px-3 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
+                  className="w-full px-2.5 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
                 />
                 <input
                   type="password"
                   placeholder="App password"
                   value={local.gmailAppPassword}
                   onChange={(e) => update({ gmailAppPassword: e.target.value })}
-                  className="w-full px-3 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
+                  className="w-full px-2.5 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
                 />
               </div>
-
               <div>
-                <label className="text-xs text-stone-500 mb-1.5 block">SMS (optional — via carrier gateway)</label>
+                <label className="text-[10px] text-stone-500 mb-1 block">SMS (optional)</label>
                 <div className="flex gap-2">
                   <input
                     type="tel"
-                    placeholder="Phone number"
+                    placeholder="Phone"
                     value={local.smsPhone}
                     onChange={(e) => update({ smsPhone: e.target.value })}
-                    className="flex-1 px-3 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
+                    className="flex-1 px-2.5 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
                   />
                   <select
                     value={local.smsCarrier}
                     onChange={(e) => update({ smsCarrier: e.target.value })}
-                    className="px-3 py-2.5 border border-stone-200 rounded-xl text-sm bg-white"
+                    className="px-2 py-2 border border-stone-200 rounded-xl text-sm bg-white"
                   >
                     {Object.keys(SMS_GATEWAYS).map((c) => (
-                      <option key={c} value={c}>
-                        {c.charAt(0).toUpperCase() + c.slice(1)}
-                      </option>
+                      <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
                     ))}
                   </select>
                 </div>

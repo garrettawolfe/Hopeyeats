@@ -58,11 +58,11 @@ export default function RestaurantMonitorCard({
       }`}
     >
       {/* Header */}
-      <div className="px-5 py-4">
+      <div className="px-3 sm:px-5 py-3 sm:py-4">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="text-base font-semibold text-charcoal truncate">
+              <h3 className="text-sm sm:text-base font-semibold text-charcoal truncate">
                 {restaurant.name}
               </h3>
               {newCount > 0 && (
@@ -137,7 +137,7 @@ export default function RestaurantMonitorCard({
 
       {/* Slots */}
       {hasSlots && (
-        <div className="border-t border-stone-100 px-5 py-3 bg-stone-50/50">
+        <div className="border-t border-stone-100 px-3 sm:px-5 py-3 bg-stone-50/50">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-medium text-emerald-700">
               {slots.length} slot{slots.length !== 1 ? "s" : ""} across{" "}
@@ -214,7 +214,7 @@ export default function RestaurantMonitorCard({
 
       {/* Footer: status */}
       {isMonitored && !hasSlots && (
-        <div className="border-t border-stone-100 px-5 py-2.5">
+        <div className="border-t border-stone-100 px-3 sm:px-5 py-2.5">
           <p className="text-[10px] text-stone-400">
             {lastChecked
               ? `No openings · Checked ${new Date(lastChecked).toLocaleTimeString()}`

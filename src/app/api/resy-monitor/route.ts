@@ -134,7 +134,8 @@ export async function POST(request: Request) {
       rotationIndex = (start + RESTAURANTS_PER_POLL) % monitored.length;
     }
 
-    console.log(`[Monitor] Poll #${monitorState.pollCount + 1} | checking ${pollTargets.length}/${monitored.length} | auth=${!!auth?.authToken}`);
+    const pollNum = monitorState.pollCount + 1;
+    console.log(`[Poll #${pollNum}] ${pollTargets.length}/${monitored.length} restaurants | party=${partySize} | auth=${!!auth?.authToken}`);
 
     // Stream response
     const encoder = new TextEncoder();
@@ -156,7 +157,7 @@ export async function POST(request: Request) {
 
       for (let batchStart = 0; batchStart < pollTargets.length; batchStart += BATCH_SIZE) {
         if (Date.now() - pollStart > TIME_BUDGET_MS) {
-          console.warn(`[Monitor] Time budget exceeded after ${processedCount}/${pollTargets.length}`);
+          console.warn(`[Poll #${pollNum}] Time budget hit after ${processedCount}/${pollTargets.length}`);
           break;
         }
 
@@ -248,7 +249,7 @@ export async function POST(request: Request) {
       const totalSlots = diffs.reduce((sum, d) => sum + d.totalAvailable, 0);
       const totalNew = diffs.reduce((sum, d) => sum + d.newSlots.length, 0);
       const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
-      console.log(`[Monitor] Poll #${monitorState.pollCount} done in ${elapsed}s | ${totalSlots} slots | ${totalNew} new`);
+      console.log(`[Poll #${monitorState.pollCount}] Done ${elapsed}s | ${totalSlots} slots | ${totalNew} new`);
 
       // Notifications
       let notifyResult: { sent: string[]; failed: string[] } | undefined;
@@ -279,7 +280,7 @@ export async function POST(request: Request) {
     };
 
     processAsync().catch(async (err) => {
-      console.error("[Monitor] Stream error:", err);
+      console.error("[Poll] Stream error:", err);
       try {
         await write({ type: "error", error: err instanceof Error ? err.message : "Unknown error" });
         await writer.close();
@@ -294,7 +295,7 @@ export async function POST(request: Request) {
       },
     });
   } catch (err) {
-    console.error("[Monitor] Poll error:", err);
+    console.error("[Poll] Error:", err);
     return new Response(
       JSON.stringify({ type: "error", error: err instanceof Error ? err.message : "Unknown error" }) + "\n",
       { status: 500, headers: { "Content-Type": "application/x-ndjson" } },
