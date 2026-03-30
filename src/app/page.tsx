@@ -121,9 +121,14 @@ export default function Home() {
     return config;
   }, [settings]);
 
+  // Prevent concurrent polls (React StrictMode can trigger double-mount)
+  const pollInFlight = useRef(false);
+
   // Poll function
   const poll = useCallback(async () => {
     if (monitoredIds.size === 0) return;
+    if (pollInFlight.current) return;
+    pollInFlight.current = true;
     setIsPolling(true);
 
     try {
@@ -199,9 +204,14 @@ export default function Home() {
         }
       }
     } catch (err) {
-      console.error("Poll error:", err);
+      if (err instanceof DOMException && err.name === "AbortError") {
+        console.warn("Poll timed out — will retry next cycle");
+      } else {
+        console.error("Poll error:", err);
+      }
     } finally {
       setIsPolling(false);
+      pollInFlight.current = false;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monitoredIds, settings, resyAuth, buildNotificationConfig]);

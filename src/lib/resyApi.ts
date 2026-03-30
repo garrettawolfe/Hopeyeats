@@ -229,35 +229,18 @@ export async function findAvailability(
     headers: buildHeaders(),
   });
 
-  // If 500, retry without randomized lat/long (some venues reject coords)
+  // Only retry on 500 (server error). 400 = bad request, won't fix with retry.
   if (response.status === 500) {
-    await randomDelay(500, 1500);
-    const simpleParams = new URLSearchParams({
-      venue_id: venueId.toString(),
-      day: date,
-      party_size: partySize.toString(),
-      lat: "0",
-      long: "0",
-    });
-    const retryUrl = `${RESY_API_BASE}/4/find?${simpleParams}`;
-    rateLimitState.totalRequests++;
-    response = await fetch(retryUrl, {
-      method: "GET",
-      headers: buildHeaders(),
-    });
-  }
-
-  // If still 500, try without lat/long entirely
-  if (response.status === 500) {
-    await randomDelay(500, 1500);
+    // Retry once without lat/long params
+    await randomDelay(300, 800);
     const noGeoParams = new URLSearchParams({
       venue_id: venueId.toString(),
       day: date,
       party_size: partySize.toString(),
     });
-    const retryUrl2 = `${RESY_API_BASE}/4/find?${noGeoParams}`;
+    const retryUrl = `${RESY_API_BASE}/4/find?${noGeoParams}`;
     rateLimitState.totalRequests++;
-    response = await fetch(retryUrl2, {
+    response = await fetch(retryUrl, {
       method: "GET",
       headers: buildHeaders(),
     });
@@ -278,13 +261,10 @@ export async function findAvailability(
   // Handle other errors
   if (!response.ok) {
     rateLimitState.consecutiveErrors++;
+    // Only log once, keep it brief
     console.error(
-      `[Resy] API error for venue ${venueId}: ${response.status} ${response.statusText}`,
+      `[Resy] ${response.status} for venue ${venueId} on ${date}`,
     );
-    // Brief backoff on server errors
-    if (response.status >= 500) {
-      await randomDelay(2000, 5000);
-    }
     return null;
   }
 

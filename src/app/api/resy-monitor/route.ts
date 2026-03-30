@@ -35,9 +35,13 @@ const venueIdCache = new Map<string, number>();
 // Persisted notification config (set via POST, used on every poll)
 let notificationConfig: NotificationConfig = {};
 
-/** Small random delay between batches (2-5s). */
+// Rotation index — check a subset of restaurants per poll, rotating through all
+let rotationIndex = 0;
+const RESTAURANTS_PER_POLL = 8;
+
+/** Small random delay between batches (1-2s). */
 function batchDelay(): Promise<void> {
-  const ms = 2000 + Math.random() * 3000;
+  const ms = 1000 + Math.random() * 1000;
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -152,29 +156,44 @@ export async function POST(request: Request) {
       advanceDays: r.advanceDays,
     }));
 
-    // ── Staggered polling: batch restaurants ─────────────────────────────
-    const batches = batchRestaurants(monitored, quiet ? 2 : 3);
+    // ── Rotate restaurants: check a subset per poll ───────────────────────
+    // This keeps each poll fast (~10-20s) while covering all restaurants
+    // over multiple cycles. On baseline (first poll), check all.
     const isBaseline = monitorState.pollCount === 0;
+
+    let pollTargets: MonitoredRestaurant[];
+    if (isBaseline) {
+      // First poll: check all restaurants to build initial snapshot
+      pollTargets = monitored;
+    } else {
+      // Subsequent polls: rotate through a subset
+      const start = rotationIndex % monitored.length;
+      pollTargets = [];
+      for (let i = 0; i < Math.min(RESTAURANTS_PER_POLL, monitored.length); i++) {
+        pollTargets.push(monitored[(start + i) % monitored.length]);
+      }
+      rotationIndex = (start + RESTAURANTS_PER_POLL) % monitored.length;
+    }
+
+    const batches = batchRestaurants(pollTargets, quiet ? 2 : 3);
     const diffs: SerializableSlotDiff[] = [];
 
-    // Time budget: stop processing after 90s to avoid timeouts
+    // Time budget: stop processing after 60s to avoid timeouts
     const pollStart = Date.now();
-    const TIME_BUDGET_MS = 90_000;
+    const TIME_BUDGET_MS = 60_000;
     let timedOut = false;
 
     for (const batch of batches) {
       if (timedOut) break;
 
-      // Process each restaurant in the batch
       for (const restaurant of batch) {
         if (Date.now() - pollStart > TIME_BUDGET_MS) {
-          console.warn(`[Monitor] Time budget exceeded after ${diffs.length}/${monitored.length} restaurants`);
+          console.warn(`[Monitor] Time budget exceeded after ${diffs.length}/${pollTargets.length} restaurants`);
           timedOut = true;
           break;
         }
 
         const lookAhead = daysAhead ?? Math.min(restaurant.advanceDays, 14);
-        // During quiet hours, only check the next 7 days (cancellation window)
         const effectiveLookAhead = quiet
           ? Math.min(lookAhead, 7)
           : lookAhead;
@@ -191,7 +210,7 @@ export async function POST(request: Request) {
         const diff = updateSnapshot(monitorState, restaurant, slots);
         diffs.push({
           restaurant: diff.restaurant,
-          currentSlots: slots, // ALL currently available slots
+          currentSlots: slots,
           newSlots: diff.newSlots,
           droppedSlots: diff.droppedSlots,
           totalAvailable: diff.totalAvailable,
@@ -199,15 +218,13 @@ export async function POST(request: Request) {
         });
       }
 
-      // Random delay between batches
       if (batches.indexOf(batch) < batches.length - 1 && !timedOut) {
         await batchDelay();
       }
     }
 
-    // For restaurants we didn't get to check this poll, include their
-    // cached slots from previous polls so the UI still shows them
-    if (timedOut) {
+    // Include cached slots for restaurants NOT checked this poll
+    {
       const checkedIds = new Set(diffs.map((d) => d.restaurant.id));
       for (const restaurant of monitored) {
         if (checkedIds.has(restaurant.id)) continue;
