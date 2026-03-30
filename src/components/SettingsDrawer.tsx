@@ -7,6 +7,8 @@ export interface AppSettings {
   // Resy credentials
   resyEmail: string;
   resyPassword: string;
+  // Persisted auth token (survives page reload)
+  resyAuthToken: string;
   // Dining preferences
   partySize: number;
   preferredDays: string[];
@@ -18,12 +20,12 @@ export interface AppSettings {
   gmailAppPassword: string;
   smsPhone: string;
   smsCarrier: string;
-  // (auto-book is per-restaurant, managed in page state)
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   resyEmail: "",
   resyPassword: "",
+  resyAuthToken: "",
   partySize: 2,
   preferredDays: ["wednesday", "thursday", "friday", "saturday"],
   timeWindowStart: "18:00",
@@ -47,12 +49,15 @@ const DAYS = [
   { key: "sunday", label: "Sun" },
 ];
 
+// Bookmarklet code: when run on resy.com, grabs the auth token from cookies
+const BOOKMARKLET_CODE = `javascript:void((function(){try{var t=document.cookie.split(';').map(c=>c.trim()).find(c=>c.startsWith('authToken='));if(t){var v=decodeURIComponent(t.split('=')[1]);window.prompt('Your Resy auth token (Cmd+C to copy):',v)}else{var x=new XMLHttpRequest();x.open('GET','https://api.resy.com/2/user',false);x.setRequestHeader('Authorization','ResyAPI api_key="VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5"');x.withCredentials=true;x.send();if(x.status===200){var d=JSON.parse(x.responseText);window.prompt('Copy this token:',d.token||'Token not found in response')}else{alert('Could not get token. Make sure you are logged into resy.com')}}}catch(e){alert('Error: '+e.message)}})())`;
+
 interface Props {
   open: boolean;
   onClose: () => void;
   settings: AppSettings;
   onSettingsChange: (s: AppSettings) => void;
-  resyAuth: { authenticated: boolean; firstName?: string; lastName?: string } | null;
+  resyAuth: { authenticated: boolean; firstName?: string; lastName?: string; authToken?: string } | null;
   onResyLogin: (email: string, password: string) => Promise<true | string>;
   onResyTokenAuth: (token: string) => Promise<true | string>;
   onResyLogout: () => void;
@@ -90,10 +95,12 @@ export default function SettingsDrawer({
   const [loginError, setLoginError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [authMode, setAuthMode] = useState<"token" | "password">("token");
-  const [tokenInput, setTokenInput] = useState("");
+  const [tokenInput, setTokenInput] = useState(settings.resyAuthToken || "");
+  const [bookmarkletCopied, setBookmarkletCopied] = useState(false);
 
   useEffect(() => {
     setLocal(settings);
+    if (settings.resyAuthToken) setTokenInput(settings.resyAuthToken);
   }, [settings]);
 
   if (!open) return null;
@@ -120,6 +127,21 @@ export default function SettingsDrawer({
       setLoginError(result);
     } else if (!result) {
       setLoginError("Login failed — check your credentials");
+    }
+    setLoginLoading(false);
+  };
+
+  const handleTokenAuth = async () => {
+    const token = tokenInput.trim();
+    if (!token) return;
+    setLoginLoading(true);
+    setLoginError(null);
+    const result = await onResyTokenAuth(token);
+    if (typeof result === "string") {
+      setLoginError(result);
+    } else {
+      // Persist the token in settings so it survives page reload
+      update({ resyAuthToken: token });
     }
     setLoginLoading(false);
   };
@@ -165,7 +187,10 @@ export default function SettingsDrawer({
                     </p>
                   </div>
                   <button
-                    onClick={onResyLogout}
+                    onClick={() => {
+                      update({ resyAuthToken: "" });
+                      onResyLogout();
+                    }}
                     className="text-xs text-stone-400 hover:text-red-500 underline"
                   >
                     Logout
@@ -182,7 +207,7 @@ export default function SettingsDrawer({
                       authMode === "token" ? "bg-white text-charcoal shadow-sm" : "text-stone-400"
                     }`}
                   >
-                    Auth Token (recommended)
+                    Auth Token
                   </button>
                   <button
                     onClick={() => setAuthMode("password")}
@@ -190,7 +215,7 @@ export default function SettingsDrawer({
                       authMode === "password" ? "bg-white text-charcoal shadow-sm" : "text-stone-400"
                     }`}
                   >
-                    Email/Password
+                    Email / Password
                   </button>
                 </div>
 
@@ -204,27 +229,46 @@ export default function SettingsDrawer({
                       className="w-full px-4 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50 font-mono text-xs resize-none"
                     />
                     <button
-                      onClick={async () => {
-                        setLoginLoading(true);
-                        setLoginError(null);
-                        const result = await onResyTokenAuth(tokenInput.trim());
-                        if (typeof result === "string") setLoginError(result);
-                        setLoginLoading(false);
-                      }}
+                      onClick={handleTokenAuth}
                       disabled={loginLoading || !tokenInput.trim()}
                       className="w-full py-2.5 bg-charcoal text-white rounded-xl text-sm font-medium hover:bg-charcoal/90 transition-colors disabled:opacity-40"
                     >
                       {loginLoading ? "Validating..." : "Connect with Token"}
                     </button>
-                    <div className="bg-stone-50 rounded-lg p-3 space-y-1.5">
-                      <p className="text-[11px] font-medium text-charcoal">How to get your auth token:</p>
-                      <ol className="text-[10px] text-stone-500 space-y-1 list-decimal pl-3.5">
-                        <li>Go to <a href="https://resy.com" target="_blank" rel="noopener noreferrer" className="underline text-stone-600">resy.com</a> and log in</li>
-                        <li>Open DevTools (F12 or Cmd+Opt+I)</li>
-                        <li>Go to the <strong>Network</strong> tab</li>
-                        <li>Click on any request to <strong>api.resy.com</strong></li>
-                        <li>Copy the <strong>x-resy-auth-token</strong> header value</li>
-                      </ol>
+
+                    {/* Bookmarklet + instructions */}
+                    <div className="bg-stone-50 rounded-xl p-3 space-y-2">
+                      <p className="text-[11px] font-medium text-charcoal">Easiest way — use this bookmarklet:</p>
+                      <div className="flex items-center gap-2">
+                        <a
+                          href={BOOKMARKLET_CODE}
+                          onClick={(e) => e.preventDefault()}
+                          onDragStart={() => {}}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-charcoal text-white rounded-lg text-xs font-medium cursor-grab active:cursor-grabbing"
+                          title="Drag this to your bookmarks bar"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                          </svg>
+                          Get Resy Token
+                        </a>
+                        <span className="text-[10px] text-stone-400">
+                          Drag to bookmarks bar
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-stone-500">
+                        Then visit <a href="https://resy.com" target="_blank" rel="noopener noreferrer" className="underline">resy.com</a>, log in, and click the bookmarklet to copy your token.
+                      </p>
+
+                      <div className="border-t border-stone-200 pt-2 mt-2">
+                        <p className="text-[11px] font-medium text-charcoal mb-1">Or manually:</p>
+                        <ol className="text-[10px] text-stone-500 space-y-0.5 list-decimal pl-3.5">
+                          <li>Go to <a href="https://resy.com" target="_blank" rel="noopener noreferrer" className="underline text-stone-600">resy.com</a> and log in</li>
+                          <li>Open DevTools (F12 or Cmd+Opt+I) → <strong>Application</strong> tab</li>
+                          <li>Under <strong>Cookies</strong> → resy.com, find <strong>authToken</strong></li>
+                          <li>Copy the value and paste above</li>
+                        </ol>
+                      </div>
                     </div>
                   </>
                 ) : (
@@ -252,16 +296,28 @@ export default function SettingsDrawer({
                         {showPassword ? "Hide" : "Show"}
                       </button>
                     </div>
-                    <button
-                      onClick={handleLogin}
-                      disabled={loginLoading || !local.resyEmail || !local.resyPassword}
-                      className="w-full py-2.5 bg-charcoal text-white rounded-xl text-sm font-medium hover:bg-charcoal/90 transition-colors disabled:opacity-40"
-                    >
-                      {loginLoading ? "Logging in..." : "Connect Resy Account"}
-                    </button>
-                    <p className="text-[10px] text-amber-500">
-                      Note: Resy may block automated login. If this fails, use the Auth Token method instead.
-                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleLogin}
+                        disabled={loginLoading || !local.resyEmail || !local.resyPassword}
+                        className="flex-1 py-2.5 bg-charcoal text-white rounded-xl text-sm font-medium hover:bg-charcoal/90 transition-colors disabled:opacity-40"
+                      >
+                        {loginLoading ? "Logging in..." : "Connect Resy Account"}
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] text-amber-500">
+                        Resy may block automated login. Use Auth Token if this fails.
+                      </p>
+                      <a
+                        href="https://resy.com/password-reset"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] text-stone-400 hover:text-stone-600 underline shrink-0 ml-2"
+                      >
+                        Forgot password?
+                      </a>
+                    </div>
                   </>
                 )}
 

@@ -112,12 +112,39 @@ export default function Home() {
     setSettings(loadSettings());
   }, []);
 
+  // Auto-restore auth from persisted token in localStorage
+  const authRestoreAttempted = useRef(false);
   useEffect(() => {
-    fetch("/api/resy-auth")
-      .then((r) => r.json())
-      .then(setResyAuth)
-      .catch(() => setResyAuth({ authenticated: false }));
-  }, []);
+    if (!settings || authRestoreAttempted.current) return;
+    authRestoreAttempted.current = true;
+
+    if (settings.resyAuthToken) {
+      // Validate the stored token
+      fetch("/api/resy-auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ authToken: settings.resyAuthToken }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.authenticated) {
+            setResyAuth(data);
+          } else {
+            // Token expired — clear it and fall back to server check
+            setSettings((prev) => prev ? { ...prev, resyAuthToken: "" } : prev);
+            saveSettings({ ...settings, resyAuthToken: "" });
+            setResyAuth({ authenticated: false });
+          }
+        })
+        .catch(() => setResyAuth({ authenticated: false }));
+    } else {
+      // No stored token — check server-side auth cache
+      fetch("/api/resy-auth")
+        .then((r) => r.json())
+        .then(setResyAuth)
+        .catch(() => setResyAuth({ authenticated: false }));
+    }
+  }, [settings]);
 
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 10000);
