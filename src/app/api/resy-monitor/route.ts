@@ -4,6 +4,7 @@ import {
   getForwardDates,
   resolveVenueId,
   getRateLimitStats,
+  resetConsecutiveErrors,
   isQuietHours,
   getRecommendedInterval,
 } from "@/lib/resyApi";
@@ -151,6 +152,9 @@ export async function POST(request: Request) {
       const pollStart = Date.now();
       const TIME_BUDGET_MS = 55_000;
       let processedCount = 0;
+
+      // Reset error state at start of each poll
+      resetConsecutiveErrors();
 
       // Process in batches of 2 restaurants at a time (gentler on Resy API)
       const BATCH_SIZE = quiet ? 1 : 2;

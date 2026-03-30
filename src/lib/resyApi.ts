@@ -84,6 +84,11 @@ export function getRateLimitStats() {
   };
 }
 
+/** Reset consecutive errors at the start of each poll. */
+export function resetConsecutiveErrors(): void {
+  rateLimitState.consecutiveErrors = 0;
+}
+
 // ─── Core Types ──────────────────────────────────────────────────────────────
 
 export interface ResySlot {
@@ -416,15 +421,19 @@ export async function checkVenueAvailability(
   const startDate = dates[0];
   const endDate = dates[dates.length - 1];
 
-  // Phase 1: Calendar check (pass auth token)
+  // Phase 1: Calendar check (only with auth — Resy returns 500 without it)
   let datesToCheck: string[];
-  const calendarDates = await fetchVenueCalendar(venueId, startDate, endDate, partySize, authToken);
-
-  if (calendarDates.length > 0) {
-    datesToCheck = calendarDates;
+  if (authToken) {
+    const calendarDates = await fetchVenueCalendar(venueId, startDate, endDate, partySize, authToken);
+    if (calendarDates.length > 0) {
+      datesToCheck = calendarDates;
+    } else {
+      // Calendar empty/failed — check fewer dates to stay fast
+      datesToCheck = dates.slice(0, Math.min(dates.length, 5));
+    }
   } else {
-    // Calendar empty/failed — check fewer dates to stay fast
-    datesToCheck = dates.slice(0, Math.min(dates.length, 5));
+    // No auth — skip calendar (it 500s without auth), check a few dates directly
+    datesToCheck = dates.slice(0, Math.min(dates.length, 4));
   }
 
   // Phase 2: Check dates in parallel batches of 2
