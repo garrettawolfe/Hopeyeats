@@ -213,15 +213,9 @@ export async function findAvailability(
     headers: buildHeaders(authToken),
   });
 
-  // Resy returns 500 for dates with no availability, but track consecutive 500s
-  // to detect IP-level blocks (all 500s = blocked, not just "no availability")
+  // Resy returns 500 for dates with no availability — this is NORMAL, not an error.
+  // Don't count these toward consecutive errors (only 429s and other failures count).
   if (response.status === 500) {
-    rateLimitState.consecutiveErrors++;
-    if (rateLimitState.consecutiveErrors >= 10) {
-      const backoff = calculateBackoff();
-      rateLimitState.backoffUntil = Date.now() + backoff;
-      console.warn(`[Resy] ${rateLimitState.consecutiveErrors} consecutive 500s — likely IP blocked. Backing off ${Math.round(backoff / 1000)}s`);
-    }
     return null;
   }
 
@@ -438,8 +432,9 @@ export async function checkVenueAvailability(
 
   // Phase 2: Check dates in parallel batches of 2
   for (let i = 0; i < datesToCheck.length; i += 2) {
-    if (rateLimitState.consecutiveErrors >= 8) {
-      console.warn(`[Resy] Too many errors (${rateLimitState.consecutiveErrors}), stopping venue ${venueName}`);
+    // Only stop if we hit actual rate limits (429s / calendar failures), not /4/find 500s
+    if (rateLimitState.consecutiveErrors >= 5) {
+      console.warn(`[Resy] Rate limited (${rateLimitState.consecutiveErrors} calendar/429 errors), stopping venue ${venueName}`);
       break;
     }
 
