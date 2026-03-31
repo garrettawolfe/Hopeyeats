@@ -167,6 +167,9 @@ export async function POST(request: Request) {
 
         const batch = pollTargets.slice(batchStart, batchStart + BATCH_SIZE);
 
+        // Reset error counter between batches so one venue's 500s don't kill the rest
+        resetConsecutiveErrors();
+
         // Send progress for batch
         await write({
           type: "progress",

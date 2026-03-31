@@ -416,7 +416,8 @@ async function fetchVenueCalendar(
     }
 
     if (response.status === 500) {
-      rateLimitState.consecutiveErrors++;
+      // Resy returns 500 for venues with no calendar data — this is NORMAL.
+      // Don't count toward consecutive errors (same as /4/find 500s).
       return [];
     }
 
@@ -473,9 +474,9 @@ export async function checkVenueAvailability(
 
   // Phase 2: Check dates in parallel batches of 2
   for (let i = 0; i < datesToCheck.length; i += 2) {
-    // Only stop if we hit actual rate limits (429s / calendar failures), not /4/find 500s
-    if (rateLimitState.consecutiveErrors >= 5) {
-      console.warn(`[Resy] Rate limited (${rateLimitState.consecutiveErrors} calendar/429 errors), stopping venue ${venueName}`);
+    // Only stop on actual 429 rate limits (not 500s which are normal "no data")
+    if (rateLimitState.total429s > 0 && rateLimitState.consecutiveErrors >= 3) {
+      console.warn(`[Resy] Rate limited (${rateLimitState.consecutiveErrors} 429 errors), stopping venue ${venueName}`);
       break;
     }
 
