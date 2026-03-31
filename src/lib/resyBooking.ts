@@ -38,6 +38,10 @@ export interface SlotDetails {
   depositAmount?: number;
 }
 
+export interface SlotDetailsError {
+  error: string;
+}
+
 // ─── In-Memory Auth Cache ───────────────────────────────────────────────────
 
 let cachedAuth: ResyAuthTokens | null = null;
@@ -223,13 +227,15 @@ export async function getSlotDetails(
   configId: string,
   date: string,
   partySize: number,
-): Promise<SlotDetails | null> {
+): Promise<SlotDetails | SlotDetailsError> {
   try {
     const body = new URLSearchParams({
       config_id: configId,
       day: date,
       party_size: partySize.toString(),
     });
+
+    console.log(`[ResyBook] Details request: config_id=${configId.slice(0, 80)}... day=${date} party=${partySize}`);
 
     const response = await fetch(`${RESY_API_BASE}/3/details`, {
       method: "POST",
@@ -239,16 +245,16 @@ export async function getSlotDetails(
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      console.error(`[ResyBook] Details failed: ${response.status} — ${text}`);
-      return null;
+      console.error(`[ResyBook] Details failed: ${response.status} — ${text.slice(0, 500)}`);
+      return { error: `Details ${response.status}: ${text.slice(0, 200)}` } as SlotDetailsError;
     }
 
     const data = await response.json();
     const bookToken = data.book_token?.value;
 
     if (!bookToken) {
-      console.error("[ResyBook] No book_token in details response");
-      return null;
+      console.error("[ResyBook] No book_token in details response. Keys:", Object.keys(data));
+      return { error: "No book_token in response" } as SlotDetailsError;
     }
 
     return {
@@ -258,7 +264,7 @@ export async function getSlotDetails(
     };
   } catch (err) {
     console.error("[ResyBook] Details error:", err);
-    return null;
+    return { error: err instanceof Error ? err.message : "Details fetch error" } as SlotDetailsError;
   }
 }
 
@@ -504,10 +510,10 @@ export async function autoBook(
 
   // Step 1: Get booking token
   const details = await getSlotDetails(authToken, configToken, date, partySize);
-  if (!details) {
+  if ("error" in details) {
     return {
       success: false,
-      error: "Could not get booking details — slot may no longer be available",
+      error: `Booking details failed: ${details.error}`,
       restaurantName,
       date,
       time,
@@ -565,8 +571,8 @@ export async function autoBookWithRetry(
       }
 
       const details = await getSlotDetails(authToken, slot.configToken, slot.date, partySize);
-      if (!details) {
-        errors.push(`${slot.date} ${slot.time}: could not get booking details (slot may be taken)`);
+      if ("error" in details) {
+        errors.push(`${slot.date} ${slot.time}: ${details.error}`);
         failedTokens.add(slot.configToken);
         continue;
       }

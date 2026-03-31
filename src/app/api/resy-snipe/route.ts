@@ -161,7 +161,7 @@ export async function POST(request: Request) {
                   partySize,
                 );
 
-                if (!details) {
+                if ("error" in details) {
                   failedTokens.add(slot.configToken);
                   continue;
                 }

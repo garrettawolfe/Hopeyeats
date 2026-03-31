@@ -179,7 +179,7 @@ export async function POST(request: Request) {
 
             for (const { slot } of scored) {
               const details = await getSlotDetails(authToken, slot.configToken, date, partySize);
-              if (!details) {
+              if ("error" in details) {
                 failedTokens.add(slot.configToken);
                 continue;
               }
