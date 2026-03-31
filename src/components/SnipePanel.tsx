@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
+
 import type { Restaurant } from "@/data/restaurants";
 
 interface SnipeEvent {
@@ -20,6 +21,7 @@ interface ScheduledSnipe {
   dropTime: string; // "HH:MM" in ET — when to auto-launch
   status: "waiting" | "running" | "completed" | "failed";
   result?: string;
+  qstashScheduled?: boolean;
 }
 
 interface Props {
@@ -50,17 +52,6 @@ function formatDateShort(dateStr: string): string {
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
-function getETNow(): { hours: number; minutes: number; dateStr: string } {
-  const now = new Date();
-  const etStr = now.toLocaleString("en-US", { timeZone: "America/New_York" });
-  const etDate = new Date(etStr);
-  return {
-    hours: etDate.getHours(),
-    minutes: etDate.getMinutes(),
-    dateStr: etDate.toISOString().split("T")[0],
-  };
-}
-
 function getDropDate(restaurant: Restaurant): string | null {
   if (!restaurant.advanceDays) return null;
   const d = new Date();
@@ -68,18 +59,7 @@ function getDropDate(restaurant: Restaurant): string | null {
   return d.toISOString().split("T")[0];
 }
 
-const STORAGE_KEY = "wolfepack_scheduled_snipes";
-
-function loadScheduledSnipes(): ScheduledSnipe[] {
-  if (typeof window === "undefined") return [];
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
-  } catch { return []; }
-}
-
-function saveScheduledSnipes(snipes: ScheduledSnipe[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(snipes));
-}
+// Server-side scheduling via Upstash Redis + QStash
 
 export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize, onBooked }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -98,110 +78,28 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
   const abortRef = useRef<AbortController | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
-  // Scheduled snipes
-  const [scheduledSnipes, setScheduledSnipes] = useState<ScheduledSnipe[]>(() => loadScheduledSnipes());
+  // Server-side scheduled snipes
+  const [scheduledSnipes, setScheduledSnipes] = useState<ScheduledSnipe[]>([]);
   const [showScheduler, setShowScheduler] = useState(false);
   const [scheduleDropTime, setScheduleDropTime] = useState("09:00");
-  const schedulerTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [schedulingInProgress, setSchedulingInProgress] = useState(false);
 
-  // Persist scheduled snipes
-  useEffect(() => {
-    saveScheduledSnipes(scheduledSnipes);
-  }, [scheduledSnipes]);
-
-  // Scheduler: check every 10s if any scheduled snipe should launch
-  const runScheduledSnipe = useCallback(async (snipe: ScheduledSnipe) => {
-    setScheduledSnipes(prev => prev.map(s =>
-      s.id === snipe.id ? { ...s, status: "running" as const } : s
-    ));
-
+  // Fetch scheduled snipes from server on mount + periodically
+  const fetchScheduledSnipes = useCallback(async () => {
     try {
-      const res = await fetch("/api/resy-snipe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          restaurantIds: snipe.restaurantIds,
-          dates: snipe.dates,
-          partySize: snipe.partySize,
-          preferredTimes: snipe.preferredTimes,
-          timeRadius: snipe.timeRadius,
-          snipeWindowSeconds: snipe.snipeWindowSeconds,
-          pollIntervalMs: 300,
-          authToken,
-        }),
-      });
-
-      if (!res.ok || !res.body) {
-        setScheduledSnipes(prev => prev.map(s =>
-          s.id === snipe.id ? { ...s, status: "failed" as const, result: "Request failed" } : s
-        ));
-        return;
+      const res = await fetch("/api/scheduled-snipes");
+      if (res.ok) {
+        const data = await res.json();
+        setScheduledSnipes(data.snipes ?? []);
       }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let booked = false;
-      let resultText = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const event = JSON.parse(line);
-            if (event.type === "booked") {
-              booked = true;
-              resultText = `Booked ${event.restaurant} at ${event.time} on ${event.date}`;
-              onBooked?.(event);
-            } else if (event.type === "done") {
-              if (!booked) resultText = `No booking after ${event.attempts} attempts`;
-            }
-          } catch { /* skip */ }
-        }
-      }
-
-      setScheduledSnipes(prev => prev.map(s =>
-        s.id === snipe.id ? { ...s, status: booked ? "completed" as const : "failed" as const, result: resultText } : s
-      ));
-    } catch (err) {
-      setScheduledSnipes(prev => prev.map(s =>
-        s.id === snipe.id ? { ...s, status: "failed" as const, result: String(err) } : s
-      ));
-    }
-  }, [authToken, onBooked]);
+    } catch { /* silent */ }
+  }, []);
 
   useEffect(() => {
-    if (schedulerTimerRef.current) clearInterval(schedulerTimerRef.current);
-
-    schedulerTimerRef.current = setInterval(() => {
-      const et = getETNow();
-      const nowTime = `${String(et.hours).padStart(2, "0")}:${String(et.minutes).padStart(2, "0")}`;
-
-      setScheduledSnipes(prev => {
-        const waiting = prev.filter(s => s.status === "waiting");
-        for (const snipe of waiting) {
-          // Launch 5 seconds before drop time for connection warmup
-          const [dropH, dropM] = snipe.dropTime.split(":").map(Number);
-          const dropMinutes = dropH * 60 + dropM;
-          const nowMinutes = et.hours * 60 + et.minutes;
-          if (nowMinutes >= dropMinutes - 1 && nowMinutes <= dropMinutes + 2) {
-            runScheduledSnipe(snipe);
-          }
-        }
-        return prev;
-      });
-    }, 10_000);
-
-    return () => {
-      if (schedulerTimerRef.current) clearInterval(schedulerTimerRef.current);
-    };
-  }, [runScheduledSnipe]);
+    fetchScheduledSnipes();
+    const timer = setInterval(fetchScheduledSnipes, 30_000); // refresh every 30s
+    return () => clearInterval(timer);
+  }, [fetchScheduledSnipes]);
 
   const toggleRestaurant = (id: string) => {
     setSelectedIds(prev => {
@@ -251,27 +149,41 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     setDates(Array.from(dropDates).sort());
   };
 
-  const scheduleSnipe = () => {
-    if (selectedIds.size === 0 || dates.length === 0 || selectedTimes.size === 0) return;
-    const selectedRestaurants = restaurants.filter(r => selectedIds.has(r.id));
-    const snipe: ScheduledSnipe = {
-      id: `sched-${Date.now()}`,
-      restaurantIds: Array.from(selectedIds),
-      restaurantNames: selectedRestaurants.map(r => r.name),
-      dates: [...dates],
-      preferredTimes: Array.from(selectedTimes).sort(),
-      timeRadius,
-      snipeWindowSeconds: snipeWindow,
-      partySize,
-      dropTime: scheduleDropTime,
-      status: "waiting",
-    };
-    setScheduledSnipes(prev => [...prev, snipe]);
-    setShowScheduler(false);
+  const scheduleSnipe = async () => {
+    if (selectedIds.size === 0 || dates.length === 0 || selectedTimes.size === 0 || !authToken) return;
+    setSchedulingInProgress(true);
+
+    try {
+      const selectedRestaurants = restaurants.filter(r => selectedIds.has(r.id));
+      const res = await fetch("/api/scheduled-snipes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          restaurantIds: Array.from(selectedIds),
+          restaurantNames: selectedRestaurants.map(r => r.name),
+          dates: [...dates],
+          preferredTimes: Array.from(selectedTimes).sort(),
+          timeRadius,
+          snipeWindowSeconds: snipeWindow,
+          partySize,
+          dropTime: scheduleDropTime,
+          authToken,
+        }),
+      });
+
+      if (res.ok) {
+        setShowScheduler(false);
+        await fetchScheduledSnipes();
+      }
+    } catch { /* silent */ }
+    finally { setSchedulingInProgress(false); }
   };
 
-  const removeScheduledSnipe = (id: string) => {
-    setScheduledSnipes(prev => prev.filter(s => s.id !== id));
+  const removeScheduledSnipe = async (id: string) => {
+    try {
+      await fetch(`/api/scheduled-snipes?id=${id}`, { method: "DELETE" });
+      setScheduledSnipes(prev => prev.filter(s => s.id !== id));
+    } catch { /* silent */ }
   };
 
   const launchSnipe = async () => {
@@ -627,8 +539,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 space-y-3">
             <h3 className="text-sm font-semibold text-blue-800">Schedule Snipe</h3>
             <p className="text-xs text-blue-600">
-              Auto-launch this snipe at a specific time (ET). The bot will start sniping when the reservation window opens.
-              Keep this tab open — scheduled snipes run from your browser.
+              Auto-launch this snipe at a specific time (ET). Runs server-side via Upstash QStash — no need to keep your browser open.
             </p>
             <div className="flex items-center gap-3">
               <label className="text-xs text-blue-700">Drop time (ET):</label>
@@ -643,9 +554,10 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               </select>
               <button
                 onClick={scheduleSnipe}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+                disabled={schedulingInProgress || !authToken}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
               >
-                Confirm Schedule
+                {schedulingInProgress ? "Scheduling..." : "Confirm Schedule"}
               </button>
             </div>
           </div>
@@ -673,6 +585,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
                     </div>
                     <div className="text-[10px] text-stone-400">
                       {snipe.dates.map(d => formatDateShort(d)).join(", ")} &middot; Drop: {formatTime12(snipe.dropTime)} ET
+                      {snipe.qstashScheduled && <span className="text-blue-500 ml-1">&middot; server-side</span>}
                       {snipe.result && <span className="ml-1">&middot; {snipe.result}</span>}
                     </div>
                   </div>

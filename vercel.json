@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "src/app/api/resy-snipe/route.ts": {
+      "maxDuration": 120
+    },
+    "src/app/api/resy-monitor/route.ts": {
+      "maxDuration": 120
+    },
+    "src/app/api/cron/snipe-scheduler/route.ts": {
+      "maxDuration": 120
+    }
+  }
+}

@@ -9,6 +9,8 @@
     "verify:venues": "tsx scripts/verify-venue-ids.ts"
   },
   "dependencies": {
+    "@upstash/qstash": "^2.10.1",
+    "@upstash/redis": "^1.37.0",
     "ics": "^3.7.2",
     "next": "^16.1.6",
     "nodemailer": "^6.9.13",
