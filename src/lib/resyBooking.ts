@@ -298,8 +298,14 @@ export async function getSlotDetails(
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       // #10: Log timing with status for attribution
-      console.error(`[ResyBook] Details ${response.status} in ${detailsMs}ms — ${text.slice(0, 300)}`);
-      return { error: `Details ${response.status} (${detailsMs}ms): ${text.slice(0, 200)}` } as SlotDetailsError;
+      // 403 with code 1026 = slot unavailable/taken or venue requires special booking
+      // 500 with request-id = Resy internal error (transient)
+      const reason = response.status === 403 ? "slot unavailable or venue requires deposit"
+        : response.status === 412 ? "slot already booked"
+        : response.status === 500 ? "Resy internal error"
+        : `HTTP ${response.status}`;
+      console.error(`[ResyBook] Details ${response.status} in ${detailsMs}ms (${reason}) — ${text.slice(0, 300)}`);
+      return { error: `${reason} (${detailsMs}ms)` } as SlotDetailsError;
     }
 
     const data = await response.json();
