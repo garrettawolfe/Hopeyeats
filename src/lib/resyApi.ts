@@ -257,6 +257,11 @@ export async function findAvailability(
   // Resy returns 500 for dates with no availability — this is NORMAL, not an error.
   // Don't count these toward consecutive errors (only 429s and other failures count).
   if (response.status === 500) {
+    // Log first few 500 bodies per poll to diagnose blocked IPs vs no availability
+    if (rateLimitState.totalRequests <= 3) {
+      const body = await response.text().catch(() => "");
+      console.log(`[Resy] /4/find 500 for venue ${venueId} on ${date}: ${body.slice(0, 200)}`);
+    }
     return null;
   }
 
@@ -304,7 +309,11 @@ export async function resolveVenueId(urlSlug: string): Promise<number | null> {
       headers: buildHeaders(),
     });
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      console.log(`[Resy] /3/venue ${response.status} for ${urlSlug}: ${body.slice(0, 200)}`);
+      return null;
+    }
 
     const data = await response.json();
     return data?.id?.resy ?? null;
@@ -416,8 +425,11 @@ async function fetchVenueCalendar(
     }
 
     if (response.status === 500) {
-      // Resy returns 500 for venues with no calendar data — this is NORMAL.
-      // Don't count toward consecutive errors (same as /4/find 500s).
+      // Log first calendar 500 to diagnose
+      if (rateLimitState.totalRequests <= 5) {
+        const body = await response.text().catch(() => "");
+        console.log(`[Resy] Calendar 500 for venue ${venueId}: ${body.slice(0, 200)}`);
+      }
       return [];
     }
 
