@@ -8,6 +8,8 @@
  * 4. Book via POST /3/book
  */
 
+import { getCookieHeader } from "@/lib/resyApi";
+
 const RESY_API_BASE = "https://api.resy.com";
 const RESY_API_KEY = "VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5";
 
@@ -106,7 +108,9 @@ export async function setAuthFromToken(
 
 function buildAuthHeaders(authToken: string, forBooking = false): Record<string, string> {
   const origin = forBooking ? "https://widgets.resy.com" : "https://resy.com";
-  return {
+  const cookieHeaderValue = getCookieHeader();
+
+  const headers: Record<string, string> = {
     Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
     "X-Resy-Auth-Token": authToken,
     "X-Resy-Universal-Auth": authToken,
@@ -117,6 +121,10 @@ function buildAuthHeaders(authToken: string, forBooking = false): Record<string,
     "X-Origin": origin,
     "Cache-Control": "no-cache",
   };
+  if (cookieHeaderValue) {
+    headers["Cookie"] = cookieHeaderValue;
+  }
+  return headers;
 }
 
 // ─── Step 1: Login ──────────────────────────────────────────────────────────

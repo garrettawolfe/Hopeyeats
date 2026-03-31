@@ -32,6 +32,50 @@ function randomUserAgent(): string {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
+// ─── Cookie Jar (Imperva WAF) ──────────────────────────────────────────────
+// Imperva/Incapsula sets cookies (visid_incap, nlbi, incap_ses) on first request.
+// Subsequent requests MUST include these cookies or get blocked with 500.
+
+const cookieJar: Map<string, string> = new Map();
+
+/** Extract set-cookie headers and store them. */
+function captureResponseCookies(response: Response): void {
+  // response.headers.getSetCookie() returns all Set-Cookie headers
+  const setCookies = response.headers.getSetCookie?.() ?? [];
+  for (const raw of setCookies) {
+    const nameValue = raw.split(";")[0]; // "name=value"
+    const eqIdx = nameValue.indexOf("=");
+    if (eqIdx > 0) {
+      const name = nameValue.substring(0, eqIdx).trim();
+      const value = nameValue.substring(eqIdx + 1).trim();
+      cookieJar.set(name, value);
+    }
+  }
+  // Fallback: try raw header (some runtimes combine them)
+  if (setCookies.length === 0) {
+    const combined = response.headers.get("set-cookie");
+    if (combined) {
+      for (const part of combined.split(/,(?=[^ ])/)) {
+        const nameValue = part.split(";")[0].trim();
+        const eqIdx = nameValue.indexOf("=");
+        if (eqIdx > 0) {
+          const name = nameValue.substring(0, eqIdx).trim();
+          const value = nameValue.substring(eqIdx + 1).trim();
+          cookieJar.set(name, value);
+        }
+      }
+    }
+  }
+}
+
+/** Build Cookie header string from stored cookies. */
+export function getCookieHeader(): string | null {
+  if (cookieJar.size === 0) return null;
+  return Array.from(cookieJar.entries())
+    .map(([name, value]) => `${name}=${value}`)
+    .join("; ");
+}
+
 // ─── Proxy Support ──────────────────────────────────────────────────────────
 
 interface ProxyConfig {
@@ -158,7 +202,8 @@ export function getPollDiagnostics(): string {
   const statuses = Object.entries(rateLimitState.pollStatusCounts)
     .map(([code, count]) => `${code}:${count}`)
     .join(",");
-  return `reqs=${rateLimitState.pollRequestCount}, statuses={${statuses}}, fetchErrors=${rateLimitState.pollErrors}, first500=${rateLimitState.pollFirst500Body ? `"${rateLimitState.pollFirst500Body.slice(0, 150)}"` : "none"}`;
+  const cookieNames = Array.from(cookieJar.keys()).join(",");
+  return `reqs=${rateLimitState.pollRequestCount}, statuses={${statuses}}, fetchErrors=${rateLimitState.pollErrors}, cookies=[${cookieNames}]`;
 }
 
 // ─── Core Types ──────────────────────────────────────────────────────────────
@@ -237,6 +282,12 @@ function buildHeaders(authToken?: string): Record<string, string> {
   headers["Sec-Fetch-Site"] = "same-site";
   headers["X-Origin"] = "https://resy.com";
 
+  // Include Imperva WAF cookies if we have them
+  const cookies = getCookieHeader();
+  if (cookies) {
+    headers["Cookie"] = cookies;
+  }
+
   return headers;
 }
 
@@ -295,6 +346,9 @@ export async function findAvailability(
     }
     return null;
   }
+
+  // Capture Imperva cookies from every response
+  captureResponseCookies(response);
 
   // Track status codes
   rateLimitState.pollStatusCounts[response.status] = (rateLimitState.pollStatusCounts[response.status] ?? 0) + 1;
