@@ -127,7 +127,7 @@ function HomeInner() {
   const [filterMode, setFilterMode] = useState<"all" | "available" | "monitored">("all");
   const [cityFilter, setCityFilter] = useState<"all" | "nyc" | "miami" | "hamptons">("all");
   const [mealFilter, setMealFilter] = useState<"all" | "dinner" | "bar" | "brunch">("all");
-  const [activePartySize, setActivePartySize] = useState<2 | 4>(2);
+  const [activePartySize, setActivePartySize] = useState<2 | 4>(4);
   const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
   const [appMode, setAppMode] = useState<"monitor" | "snipe">("monitor");
   const [debugLog, setDebugLog] = useState<string[]>([]);
