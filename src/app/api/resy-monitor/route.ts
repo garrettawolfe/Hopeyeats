@@ -11,6 +11,7 @@ import {
   getRecommendedInterval,
   warmUpImperva,
   hasValidCookies,
+  markPollSuccess,
 } from "@/lib/resyApi";
 import {
   createMonitorState,
@@ -191,8 +192,9 @@ export async function POST(request: Request) {
           break;
         }
 
-        // #7: Early exit if first 2 batches returned all 500s (don't waste time)
-        if (consecutiveAllFailBatches >= 2 && processedCount >= 4) {
+        // #7: Early exit if first 3 batches ALL returned 0 slots AND we've checked 6+ restaurants
+        // (raised from 2 to avoid false positives when a few venues just have no availability)
+        if (consecutiveAllFailBatches >= 3 && processedCount >= 6) {
           console.warn(`[Poll #${pollNum}] #7 Early exit — ${consecutiveAllFailBatches} consecutive batches returned 0 slots (likely WAF blocked)`);
           break;
         }
@@ -391,6 +393,11 @@ export async function POST(request: Request) {
       const rlStats = getRateLimitStats();
       const rlSuffix = rlStats.consecutiveErrors > 0 ? ` | errors=${rlStats.consecutiveErrors}` : "";
       const diag = getPollDiagnostics();
+
+      // Signal whether this poll had any successful API calls
+      // This prevents the warm-up from clearing working cookies on next poll
+      const had200s = (rlStats.pollStatusCounts[200] ?? 0) > 0;
+      markPollSuccess(had200s);
       console.log(`[Poll #${monitorState.pollCount}] Done ${elapsed}s | ${totalSlots} slots | ${totalNew} new${rlSuffix} | ${diag}`);
 
       // Notifications

@@ -289,7 +289,13 @@ export function getPollDiagnostics(): string {
 // This helps bypass IP-reputation based blocks on datacenter IPs.
 
 let lastWarmUpAt = 0;
-const WARMUP_INTERVAL_MS = 45_000; // re-warm every 45s
+const WARMUP_INTERVAL_MS = 300_000; // 5 min — don't re-warm between polls
+let lastPollHadSuccess = false; // Track if last poll had any 200s
+
+/** Called by monitor route to signal that the last poll had successful API calls. */
+export function markPollSuccess(had200s: boolean): void {
+  lastPollHadSuccess = had200s;
+}
 
 /** #5: Check if cookie jar has the required Imperva cookies for API access. */
 export function hasValidCookies(): boolean {
@@ -301,7 +307,24 @@ export function hasValidCookies(): boolean {
 
 export async function warmUpImperva(): Promise<void> {
   const now = Date.now();
-  if (now - lastWarmUpAt < WARMUP_INTERVAL_MS && hasValidCookies()) return;
+
+  // CRITICAL: Don't re-warm if cookies are working.
+  // Re-warming clears the cookie jar, and new cookies often don't work.
+  // Only re-warm if: (a) no cookies yet, or (b) last poll was all failures, or (c) interval expired
+  if (hasValidCookies()) {
+    if (lastPollHadSuccess) {
+      // Cookies worked last poll — keep them, don't touch
+      return;
+    }
+    if (now - lastWarmUpAt < WARMUP_INTERVAL_MS) {
+      // Cookies exist but failed — wait for interval before retry
+      return;
+    }
+    console.log(`[Resy] Warm-up triggered: cookies exist but last poll failed — refreshing`);
+  } else if (now - lastWarmUpAt < 10_000) {
+    // Just warmed up <10s ago and still no valid cookies — don't spam
+    return;
+  }
 
   // Clear stale cookies — mixing cookies from different Imperva sessions causes 500s
   cookieJar.clear();
