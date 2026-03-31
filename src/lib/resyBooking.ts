@@ -254,20 +254,18 @@ export async function getSlotDetails(
     // Warm up Imperva cookies if needed (ensures WAF cookies are fresh)
     await warmUpImperva();
 
-    // Use form-encoded body matching real Resy widget client
+    // Resy /3/details requires application/json (415 error if form-encoded)
     const headers = buildAuthHeaders(authToken, true);
-    // Content-Type is already application/x-www-form-urlencoded from buildAuthHeaders
-
-    const formBody = new URLSearchParams({
-      config_id: configId,
-      day: date,
-      party_size: String(partySize),
-    });
+    headers["Content-Type"] = "application/json";
 
     const response = await fetch(`${RESY_API_BASE}/3/details`, {
       method: "POST",
       headers,
-      body: formBody.toString(),
+      body: JSON.stringify({
+        config_id: configId,
+        day: date,
+        party_size: partySize,
+      }),
     });
 
     if (!response.ok) {

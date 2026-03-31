@@ -217,30 +217,57 @@ export async function warmUpImperva(): Promise<void> {
   const now = Date.now();
   if (now - lastWarmUpAt < WARMUP_INTERVAL_MS && cookieJar.size > 0) return;
 
+  // Clear stale cookies — mixing cookies from different Imperva sessions causes 500s
+  cookieJar.clear();
+
+  const ua = randomUserAgent();
+  const commonHeaders = {
+    "User-Agent": ua,
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+  };
+
   try {
-    const ua = randomUserAgent();
-    const response = await fetch("https://resy.com", {
+    // Step 1: Hit resy.com to get Imperva cookies for the main domain
+    const r1 = await fetch("https://resy.com", {
       method: "GET",
-      headers: {
-        "User-Agent": ua,
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Cache-Control": "no-cache",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
-      },
+      headers: commonHeaders,
       redirect: "follow",
     });
+    captureResponseCookies(r1);
 
-    captureResponseCookies(response);
+    // Step 2: Hit api.resy.com to get Imperva cookies for the API domain
+    // (may use a different Imperva site ID)
+    const cookiesSoFar = getCookieHeader();
+    const r2 = await fetch("https://api.resy.com/3/venue?url_slug=lartusi&location_id=1", {
+      method: "GET",
+      headers: {
+        ...commonHeaders,
+        Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
+        Accept: "application/json",
+        Origin: "https://resy.com",
+        Referer: "https://resy.com/",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        ...(cookiesSoFar ? { Cookie: cookiesSoFar } : {}),
+      },
+    });
+    captureResponseCookies(r2);
+
     lastWarmUpAt = now;
     const cookieNames = Array.from(cookieJar.keys()).join(", ");
-    console.log(`[Resy] Warm-up ${response.status} — cookies: [${cookieNames}]`);
+    console.log(`[Resy] Warm-up resy.com=${r1.status} api=${r2.status} — cookies: [${cookieNames}]`);
   } catch (err) {
+    // Even if warm-up partially fails, keep whatever cookies we got
+    lastWarmUpAt = now;
     console.warn(`[Resy] Warm-up failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
