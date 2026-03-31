@@ -832,20 +832,30 @@ function HomeInner() {
 
         {/* Debug Log */}
         <div className="mb-4">
-          <button
-            onClick={() => setShowDebugLog(!showDebugLog)}
-            className="text-xs text-stone-400 hover:text-stone-600 transition-colors flex items-center gap-1"
-          >
-            {showDebugLog ? "▼" : "▶"} Debug Log ({debugLog.length})
-            {debugLog.length > 0 && (
-              <button
-                onClick={(e) => { e.stopPropagation(); setDebugLog([]); }}
-                className="ml-2 text-stone-300 hover:text-red-400"
-              >
-                clear
-              </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowDebugLog(!showDebugLog)}
+              className="text-xs text-stone-400 hover:text-stone-600 transition-colors flex items-center gap-1"
+            >
+              {showDebugLog ? "▼" : "▶"} Debug Log ({debugLog.length})
+            </button>
+            {showDebugLog && debugLog.length > 0 && (
+              <>
+                <button
+                  onClick={() => { navigator.clipboard.writeText(debugLog.join("\n")); }}
+                  className="text-[10px] px-2 py-0.5 bg-stone-700 text-stone-300 rounded hover:bg-stone-600 transition-colors"
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={() => setDebugLog([])}
+                  className="text-[10px] px-2 py-0.5 bg-stone-700 text-stone-300 rounded hover:bg-red-700 transition-colors"
+                >
+                  Clear
+                </button>
+              </>
             )}
-          </button>
+          </div>
           {showDebugLog && (
             <div className="mt-2 bg-stone-900 text-stone-300 rounded-xl p-3 max-h-48 overflow-y-auto font-mono text-[10px] leading-relaxed select-all">
               {debugLog.length === 0 ? (

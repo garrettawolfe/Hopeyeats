@@ -553,14 +553,20 @@ export async function autoBookWithRetry(
 ): Promise<BookingResult> {
   const existing = await fetchExistingReservations(authToken);
   const failedTokens = new Set<string>();
+  const errors: string[] = [];
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     for (const slot of slots) {
       if (failedTokens.has(slot.configToken)) continue;
-      if (hasTimeConflict(existing, slot.date, slot.time)) continue;
+      if (hasTimeConflict(existing, slot.date, slot.time)) {
+        errors.push(`${slot.date} ${slot.time}: time conflict with existing reservation`);
+        failedTokens.add(slot.configToken);
+        continue;
+      }
 
       const details = await getSlotDetails(authToken, slot.configToken, slot.date, partySize);
       if (!details) {
+        errors.push(`${slot.date} ${slot.time}: could not get booking details (slot may be taken)`);
         failedTokens.add(slot.configToken);
         continue;
       }
@@ -571,6 +577,7 @@ export async function autoBookWithRetry(
         return { ...result, restaurantName, date: slot.date, time: slot.time, partySize };
       }
 
+      errors.push(`${slot.date} ${slot.time}: ${result.error ?? "booking failed"}`);
       failedTokens.add(slot.configToken);
     }
 
@@ -581,7 +588,7 @@ export async function autoBookWithRetry(
 
   return {
     success: false,
-    error: `Failed after ${maxRetries} attempts across ${slots.length} slots`,
+    error: `Failed after ${maxRetries} attempts across ${slots.length} slots. Last errors: ${errors.slice(-3).join(" | ")}`,
     restaurantName,
     partySize,
   };
