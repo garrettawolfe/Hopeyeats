@@ -242,17 +242,20 @@ function HomeInner() {
   const poll = useCallback(async () => {
     if (monitoredIds.size === 0) return;
     if (pollInFlight.current) return;
+    // Don't poll until user is authenticated with Resy
+    const currentAuth = resyAuthRef.current;
+    if (!currentAuth?.authenticated) return;
     pollInFlight.current = true;
     setIsPolling(true);
     setScanProgress(null);
     setActivityFeed([]);
-    const currentAuth = resyAuthRef.current;
     const currentSettings = settingsRef.current;
     const cycle = pollCycleRef.current++;
 
-    // Smart polling: auto-book restaurants every poll (3 dates), others every 3rd poll (2 dates)
+    // Smart polling: auto-book restaurants every poll (3 dates), others every 2nd poll (2 dates)
+    // Cycle 0 = baseline, always checks everyone. Odd cycles = tier-1 only. Even cycles = everyone.
     const tier1 = Array.from(autoBookIds); // checked every poll
-    const tier2 = cycle % 3 === 0
+    const tier2 = (cycle === 0 || cycle % 2 === 0)
       ? Array.from(monitoredIds).filter(id => !autoBookIds.has(id))
       : [];
     const restaurantIds = [...tier1, ...tier2];
@@ -443,10 +446,10 @@ function HomeInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monitoredIds, settings, resyAuth, buildNotificationConfig]);
 
-  // Wait for settings AND auth to FULLY resolve (not just "not null" — must be done validating)
-  const authResolved = resyAuth !== null && (resyAuth.authenticated || !settings?.resyAuthToken);
+  // Only start polling when: settings loaded AND Resy auth fully resolved AND authenticated
+  const resyAuthenticated = resyAuth?.authenticated === true;
   useEffect(() => {
-    if (!settings || !authResolved) return;
+    if (!settings || !resyAuthenticated) return;
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission();
     }
@@ -455,7 +458,7 @@ function HomeInner() {
     intervalRef.current = setInterval(poll, jitter);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings !== null, authResolved]);
+  }, [settings !== null, resyAuthenticated]);
 
   // --- Handlers ---
 
