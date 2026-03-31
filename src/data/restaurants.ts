@@ -32,40 +32,6 @@ export interface Restaurant {
 
 export const restaurants: Restaurant[] = [
   {
-    id: "don-angie",
-    name: "Don Angie",
-    neighborhood: "West Village",
-    borough: "Manhattan",
-    cuisine: "Italian-American",
-    ambiance:
-      "Cozy, warmly lit Italian-American gem with a retro supper-club feel. Expect pinwheel lasagna, wood-paneled walls, and a room full of people who planned three weeks ahead.",
-    mustOrder: "Pinwheel Lasagna, Honey Walnut Shrimp, Tie-Dye Cheesecake",
-    reservationMethod: "resy",
-    reservationEmail: null,
-    contactEmail: null,
-    resyUrl: "https://resy.com/cities/new-york-ny/venues/don-angie",
-    resyVenueId: 1505,
-    website: "https://www.donangie.com",
-    advanceDays: 7,
-    bookingTime: "9:00 AM ET",
-    bookingTip:
-      "Reservations vanish in under 15 seconds on Resy. Log in 2 minutes early. 10 bar seats are walk-in only — arrive before 6 PM on a weekday.",
-    walkInOption: "10 bar seats available nightly — no wait list",
-    phone: null,
-    michelinStar: false,
-    bibGourmand: false,
-    priceRange: "$$$",
-    imageUrl:
-      "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=800&q=80",
-    imageCredit: "Unsplash",
-    tags: ["Italian", "Date Night", "West Village", "Pasta"],
-    city: "nyc",
-    category: ["dinner"],
-    instagramUrl: "https://www.instagram.com/donangienyc/",
-    menuUrl: null,
-    mapsUrl: "https://www.google.com/maps/search/?api=1&query=Don+Angie+NYC",
-  },
-  {
     id: "lartusi",
     name: "L'Artusi",
     neighborhood: "West Village",

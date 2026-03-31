@@ -61,8 +61,9 @@ function getDropDate(restaurant: Restaurant): string | null {
 
 // Server-side scheduling via Upstash Redis + QStash
 
-export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize, onBooked }: Props) {
+export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, onBooked }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [snipePartySize, setSnipePartySize] = useState(defaultPartySize);
   const [dates, setDates] = useState<string[]>(() => {
     const d = new Date();
     d.setDate(d.getDate() + 1);
@@ -165,7 +166,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           preferredTimes: Array.from(selectedTimes).sort(),
           timeRadius,
           snipeWindowSeconds: snipeWindow,
-          partySize,
+          partySize: snipePartySize,
           dropTime: scheduleDropTime,
           authToken,
         }),
@@ -203,7 +204,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
         body: JSON.stringify({
           restaurantIds: Array.from(selectedIds),
           dates,
-          partySize,
+          partySize: snipePartySize,
           preferredTimes: Array.from(selectedTimes).sort(),
           timeRadius,
           snipeWindowSeconds: snipeWindow,
@@ -477,8 +478,21 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           </div>
           <div>
             <label className="block text-xs text-stone-500 mb-1">Party Size</label>
-            <div className="px-3 py-2 border border-stone-200 rounded-lg text-sm text-stone-600 bg-stone-50">
-              {partySize}
+            <div className="flex gap-1">
+              {([2, 4] as const).map(size => (
+                <button
+                  key={size}
+                  onClick={() => setSnipePartySize(size)}
+                  disabled={isRunning}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    snipePartySize === size
+                      ? "bg-charcoal text-white"
+                      : "bg-stone-100 text-stone-500 hover:bg-stone-200"
+                  }`}
+                >
+                  {size}
+                </button>
+              ))}
             </div>
           </div>
         </div>

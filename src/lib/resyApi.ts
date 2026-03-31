@@ -468,8 +468,8 @@ export async function checkVenueAvailability(
       datesToCheck = dates.slice(0, Math.min(dates.length, 5));
     }
   } else {
-    // No auth — skip calendar (it 500s without auth), check a few dates directly
-    datesToCheck = dates.slice(0, Math.min(dates.length, 4));
+    // No auth — skip calendar (it 500s without auth), check minimal dates
+    datesToCheck = dates.slice(0, Math.min(dates.length, 2));
   }
 
   // Phase 2: Check dates in parallel batches of 2

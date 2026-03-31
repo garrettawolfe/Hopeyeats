@@ -415,9 +415,10 @@ function HomeInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monitoredIds, settings, resyAuth, buildNotificationConfig]);
 
-  // Wait for both settings AND auth to resolve
+  // Wait for settings AND auth to FULLY resolve (not just "not null" — must be done validating)
+  const authResolved = resyAuth !== null && (resyAuth.authenticated || !settings?.resyAuthToken);
   useEffect(() => {
-    if (!settings || resyAuth === null) return;
+    if (!settings || !authResolved) return;
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission();
     }
@@ -426,7 +427,7 @@ function HomeInner() {
     intervalRef.current = setInterval(poll, jitter);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings !== null, resyAuth !== null]);
+  }, [settings !== null, authResolved]);
 
   // --- Handlers ---
 
