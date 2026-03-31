@@ -573,6 +573,7 @@ export async function checkVenueAvailability(
   dates: string[],
   partySize: number = 2,
   authToken?: string,
+  maxDates: number = 3,
 ): Promise<AvailabilitySlot[]> {
   if (dates.length === 0) return [];
 
@@ -580,7 +581,7 @@ export async function checkVenueAvailability(
 
   // Skip calendar entirely — it consistently returns 500 with empty body,
   // wasting an API call + delay per restaurant. Just check dates directly.
-  const datesToCheck = dates.slice(0, Math.min(dates.length, 3));
+  const datesToCheck = dates.slice(0, Math.min(dates.length, maxDates));
 
   // Phase 2: Check dates in parallel batches of 2
   for (let i = 0; i < datesToCheck.length; i += 2) {

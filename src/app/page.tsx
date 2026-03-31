@@ -235,6 +235,7 @@ function HomeInner() {
 
   // --- Polling ---
   const pollInFlight = useRef(false);
+  const pollCycleRef = useRef(0);
   const resyAuthRef = useRef(resyAuth);
   resyAuthRef.current = resyAuth;
 
@@ -245,24 +246,46 @@ function HomeInner() {
     setIsPolling(true);
     setScanProgress(null);
     setActivityFeed([]);
-    addLog(`Poll starting — ${monitoredIds.size} restaurants, auth=${!!resyAuthRef.current?.authenticated}`);
-
     const currentAuth = resyAuthRef.current;
     const currentSettings = settingsRef.current;
+    const cycle = pollCycleRef.current++;
+
+    // Smart polling: auto-book restaurants every poll (3 dates), others every 3rd poll (2 dates)
+    const tier1 = Array.from(autoBookIds); // checked every poll
+    const tier2 = cycle % 3 === 0
+      ? Array.from(monitoredIds).filter(id => !autoBookIds.has(id))
+      : [];
+    const restaurantIds = [...tier1, ...tier2];
+    const dateLimits: Record<string, number> = {};
+    for (const id of tier1) dateLimits[id] = 3;
+    for (const id of tier2) dateLimits[id] = 2;
+
+    addLog(`Poll #${cycle} — ${tier1.length} priority + ${tier2.length} monitor = ${restaurantIds.length} restaurants`);
 
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120_000);
 
+      // Build time filters for server-side auto-book
+      const timeFilters = currentSettings ? {
+        preferredDays: currentSettings.preferredDays,
+        dayTimeWindows: currentSettings.dayTimeWindows,
+        blackoutDates: currentSettings.blackoutDates,
+      } : undefined;
+
       const res = await fetch("/api/resy-monitor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          restaurantIds: Array.from(monitoredIds),
+          restaurantIds,
+          dateLimits,
           partySize: currentSettings?.partySize ?? 2,
           resolveIds: true,
           notifications: buildNotificationConfig(),
           authToken: currentAuth?.authToken,
+          // Inline auto-book config (Option C — booking happens server-side in same instance)
+          autoBookIds: tier1.length > 0 && currentAuth?.authenticated ? tier1 : undefined,
+          timeFilters,
         }),
         signal: controller.signal,
       });
@@ -346,6 +369,25 @@ function HomeInner() {
                   ...prev,
                 ].slice(0, 10));
               }
+            } else if (event.type === "booking") {
+                          // Inline auto-book result from server (Option C)
+                          const log: BookingLog = {
+                            id: `auto-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                            restaurantName: event.restaurant,
+                            date: event.date,
+                            time: event.time,
+                            partySize: currentSettings?.partySize ?? 2,
+                            status: event.success ? "success" : "failed",
+                            error: event.error,
+                            timestamp: new Date().toISOString(),
+                          };
+                          setBookingLog((prev) => [log, ...prev].slice(0, 50));
+                          addLog(`[ServerBook] ${event.restaurant} ${event.date} ${event.time}: ${event.success ? "SUCCESS" : `FAILED — ${event.error}`}`);
+                          if (event.success) {
+                            addToast(`Auto-booked ${event.restaurant} — ${event.date} at ${event.time}`, "success", 8000);
+                          } else {
+                            addToast(`Auto-book failed: ${event.restaurant} — ${event.error ?? "unknown error"}`, "error", 5000);
+                          }
             } else if (event.type === "done") {
               const result: MonitorPollResult = event.pollResult;
               streamIsBaseline = result.isBaseline;
@@ -384,58 +426,8 @@ function HomeInner() {
         }
       }
 
-      // Auto-book with slot pool: try all matching slots for autobook-enabled restaurants
-      // On baseline (first poll), use currentSlots; on subsequent polls, use newSlots
-      if (currentAuth?.authenticated && autoBookIds.size > 0 && currentSettings) {
-        addLog(`Auto-book check — ${autoBookIds.size} restaurants enabled, baseline=${streamIsBaseline}`);
-        for (const diff of streamDiffs) {
-          if (!autoBookIds.has(diff.restaurant.id)) continue;
-          const candidates = streamIsBaseline ? (diff.currentSlots ?? []) : diff.newSlots;
-          if (candidates.length === 0) {
-            addLog(`Auto-book ${diff.restaurant.name}: 0 candidates (${streamIsBaseline ? "baseline, no currentSlots" : "no newSlots"})`);
-            continue;
-          }
-          const matchingNew = candidates.filter((s) => slotMatchesFilters(s, currentSettings));
-          addLog(`Auto-book ${diff.restaurant.name}: ${candidates.length} candidates, ${matchingNew.length} match filters`);
-          if (matchingNew.length > 0) {
-            // Use slot pool retry — send all matching slots at once
-            const slots = matchingNew.map(s => ({ configToken: s.configToken, date: s.date, time: s.time }));
-            addLog(`Auto-book ${diff.restaurant.name}: attempting ${slots.length} slots — ${slots.map(s => `${s.date} ${s.time}`).join(", ")}`);
-            try {
-              const res = await fetch("/api/resy-book", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  slots,
-                  partySize: currentSettings.partySize ?? 2,
-                  restaurantName: diff.restaurant.name,
-                  authToken: currentAuth.authToken,
-                }),
-              });
-              const data = await res.json();
-              const log: BookingLog = {
-                id: `auto-${Date.now()}`,
-                restaurantName: diff.restaurant.name,
-                date: data.date ?? matchingNew[0].date,
-                time: data.time ?? matchingNew[0].time,
-                partySize: currentSettings.partySize ?? 2,
-                status: data.success ? "success" : "failed",
-                error: data.error,
-                timestamp: new Date().toISOString(),
-              };
-              setBookingLog((prev) => [log, ...prev].slice(0, 50));
-              addLog(`Auto-book ${diff.restaurant.name}: ${data.success ? "SUCCESS" : "FAILED"} — ${data.error ?? `${log.date} ${log.time}`}`);
-              if (data.success) {
-                addToast(`Auto-booked ${diff.restaurant.name} — ${log.date} at ${log.time}`, "success", 8000);
-              } else {
-                addToast(`Auto-book failed: ${diff.restaurant.name} — ${data.error ?? "unknown error"}`, "error", 5000);
-              }
-            } catch (e) {
-              addLog(`Auto-book ${diff.restaurant.name}: EXCEPTION — ${e instanceof Error ? e.message : String(e)}`);
-            }
-          }
-        }
-      }
+      // Auto-book now happens server-side (Option C — inline in monitor route)
+      // Client just handles "booking" events from the NDJSON stream above
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         addLog("Poll timed out — will retry next cycle");
@@ -459,7 +451,7 @@ function HomeInner() {
       Notification.requestPermission();
     }
     poll();
-    const jitter = 60_000 * (0.85 + Math.random() * 0.3);
+    const jitter = 60_000 * (1.0 + Math.random() * 0.3);
     intervalRef.current = setInterval(poll, jitter);
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps

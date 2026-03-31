@@ -23,7 +23,7 @@ import {
   sendNotifications,
   type NotificationConfig,
 } from "@/lib/notifications";
-import { getCachedAuth } from "@/lib/resyBooking";
+import { getCachedAuth, setAuthFromToken, getSlotDetails, bookReservation, fetchExistingReservations, hasTimeConflict } from "@/lib/resyBooking";
 
 export const maxDuration = 120;
 
@@ -54,6 +54,10 @@ export async function POST(request: Request) {
       resolveIds = false,
       notifications,
       authToken,
+      autoBookIds,
+      paymentMethodId,
+      timeFilters,
+      dateLimits,
     } = body as {
       restaurantIds?: string[];
       partySize?: number;
@@ -62,6 +66,10 @@ export async function POST(request: Request) {
       resolveIds?: boolean;
       notifications?: NotificationConfig;
       authToken?: string;
+      autoBookIds?: string[];
+      paymentMethodId?: number;
+      timeFilters?: { preferredDays?: string[]; dayTimeWindows?: Record<string, { earliest?: string; latest?: string }>; blackoutDates?: Array<{ date: string }> };
+      dateLimits?: Record<string, number>;
     };
 
     if (notifications) notificationConfig = notifications;
@@ -121,7 +129,26 @@ export async function POST(request: Request) {
     const isBaseline = monitorState.pollCount === 0;
 
     // Use token from request body (client sends it) or fall back to server cache
-    const auth = authToken ? { authToken } : getCachedAuth();
+    let auth: { authToken: string; paymentMethodId?: number | null } | null = null;
+    if (authToken) {
+      // Resolve payment method for inline booking
+      const cached = getCachedAuth();
+      if (cached?.authToken === authToken) {
+        auth = cached;
+      } else if (autoBookIds && autoBookIds.length > 0) {
+        // Need payment method for auto-book — validate token
+        const validated = await setAuthFromToken(authToken);
+        if (!("error" in validated)) {
+          auth = validated;
+        } else {
+          auth = { authToken };
+        }
+      } else {
+        auth = { authToken };
+      }
+    } else {
+      auth = getCachedAuth();
+    }
 
     // Poll all restaurants every cycle (fast enough with 200-400ms gaps)
     const pollTargets = monitored;
@@ -173,7 +200,8 @@ export async function POST(request: Request) {
         // Check all restaurants in this batch IN PARALLEL
         const batchResults = await Promise.all(
           batch.map(async (restaurant) => {
-            const lookAhead = daysAhead ?? Math.min(restaurant.advanceDays, 14);
+            const maxDates = dateLimits?.[restaurant.id] ?? 3;
+            const lookAhead = daysAhead ?? Math.min(restaurant.advanceDays, maxDates <= 2 ? 7 : 14);
             const effectiveLookAhead = quiet ? Math.min(lookAhead, 7) : lookAhead;
             const dates = getForwardDates(effectiveLookAhead);
 
@@ -184,6 +212,7 @@ export async function POST(request: Request) {
               dates,
               partySize,
               auth?.authToken,
+              maxDates,
             );
 
             const diff = updateSnapshot(monitorState, restaurant, slots);
@@ -213,6 +242,81 @@ export async function POST(request: Request) {
               slotCount: serialized.totalAvailable,
               newCount: serialized.newSlots.length,
             });
+          }
+        }
+
+        // Inline auto-book: attempt booking from same serverless instance (shared cookies)
+        const effectivePaymentId = paymentMethodId ?? (auth as { paymentMethodId?: number | null })?.paymentMethodId;
+        if (autoBookIds && autoBookIds.length > 0 && auth?.authToken && effectivePaymentId) {
+          for (const serialized of batchResults) {
+            if (!autoBookIds.includes(serialized.restaurant.id)) continue;
+            if (serialized.newSlots.length === 0 && !isBaseline) continue;
+
+            const candidates = isBaseline ? (serialized.currentSlots ?? []) : serialized.newSlots;
+            if (candidates.length === 0) continue;
+
+            // Filter by time preferences
+            const matching = timeFilters ? candidates.filter(slot => {
+              const { preferredDays, dayTimeWindows, blackoutDates } = timeFilters;
+              if (blackoutDates?.length && blackoutDates.some(bd => bd.date === slot.date)) return false;
+              if (!preferredDays?.length) return true;
+              const d = new Date(slot.date + "T12:00:00");
+              const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+              const dayName = dayNames[d.getDay()];
+              if (!preferredDays.includes(dayName)) return false;
+              const tw = dayTimeWindows?.[dayName];
+              if (tw) {
+                if (tw.earliest && slot.time < tw.earliest) return false;
+                if (tw.latest && slot.time > tw.latest) return false;
+              }
+              return true;
+            }) : candidates;
+
+            if (matching.length === 0) continue;
+
+            // Fetch existing reservations for conflict check
+            let existing: Awaited<ReturnType<typeof fetchExistingReservations>> = [];
+            try {
+              existing = await fetchExistingReservations(auth.authToken);
+            } catch { /* continue without conflict check */ }
+
+            let booked = false;
+            for (const slot of matching) {
+              if (booked) break;
+              if (hasTimeConflict(existing, slot.date, slot.time)) continue;
+
+              const details = await getSlotDetails(auth.authToken, slot.configToken, slot.date, partySize);
+              if ("error" in details) {
+                console.log(`[AutoBook] ${serialized.restaurant.name} ${slot.date} ${slot.time}: ${details.error}`);
+                continue;
+              }
+
+              const result = await bookReservation(auth.authToken, details.bookToken, effectivePaymentId);
+              if (result.success) {
+                booked = true;
+                console.log(`[AutoBook] BOOKED ${serialized.restaurant.name} ${slot.date} ${slot.time}`);
+                await write({
+                  type: "booking",
+                  restaurant: serialized.restaurant.name,
+                  restaurantId: serialized.restaurant.id,
+                  date: slot.date,
+                  time: slot.time,
+                  success: true,
+                  reservationId: result.reservationId,
+                });
+              } else {
+                console.log(`[AutoBook] Failed ${serialized.restaurant.name} ${slot.date} ${slot.time}: ${result.error}`);
+                await write({
+                  type: "booking",
+                  restaurant: serialized.restaurant.name,
+                  restaurantId: serialized.restaurant.id,
+                  date: slot.date,
+                  time: slot.time,
+                  success: false,
+                  error: result.error,
+                });
+              }
+            }
           }
         }
 
