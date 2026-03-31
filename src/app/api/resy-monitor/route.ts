@@ -30,8 +30,7 @@ export const maxDuration = 120;
 let monitorState: MonitorState = createMonitorState();
 const venueIdCache = new Map<string, number>();
 let notificationConfig: NotificationConfig = {};
-let rotationIndex = 0;
-const RESTAURANTS_PER_POLL = 10;
+// All restaurants polled every cycle (fast enough with 200-400ms gaps)
 
 /** Delay helper */
 function delay(ms: number): Promise<void> {
@@ -124,18 +123,8 @@ export async function POST(request: Request) {
     // Use token from request body (client sends it) or fall back to server cache
     const auth = authToken ? { authToken } : getCachedAuth();
 
-    // Rotation: subset per poll (all on baseline)
-    let pollTargets: MonitoredRestaurant[];
-    if (isBaseline) {
-      pollTargets = monitored;
-    } else {
-      const start = rotationIndex % monitored.length;
-      pollTargets = [];
-      for (let i = 0; i < Math.min(RESTAURANTS_PER_POLL, monitored.length); i++) {
-        pollTargets.push(monitored[(start + i) % monitored.length]);
-      }
-      rotationIndex = (start + RESTAURANTS_PER_POLL) % monitored.length;
-    }
+    // Poll all restaurants every cycle (fast enough with 200-400ms gaps)
+    const pollTargets = monitored;
 
     const pollNum = monitorState.pollCount + 1;
     console.log(`[Poll #${pollNum}] ${pollTargets.length}/${monitored.length} restaurants | party=${partySize} | auth=${!!auth?.authToken}`);

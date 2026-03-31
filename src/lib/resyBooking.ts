@@ -229,19 +229,20 @@ export async function getSlotDetails(
   partySize: number,
 ): Promise<SlotDetails | SlotDetailsError> {
   try {
-    const body = new URLSearchParams({
-      config_id: configId,
-      day: date,
-      party_size: partySize.toString(),
-    });
-
     console.log(`[ResyBook] Details request: config_id=${configId.slice(0, 100)} day=${date} party=${partySize}`);
 
-    // Use widget origin — the real Resy booking flow happens inside a widgets.resy.com iframe
+    // Use JSON body (matching real Resy client) with widget origin
+    const headers = buildAuthHeaders(authToken, true);
+    headers["Content-Type"] = "application/json";
+
     const response = await fetch(`${RESY_API_BASE}/3/details`, {
       method: "POST",
-      headers: buildAuthHeaders(authToken, true),
-      body: body.toString(),
+      headers,
+      body: JSON.stringify({
+        config_id: configId,
+        day: date,
+        party_size: partySize,
+      }),
     });
 
     if (!response.ok) {
