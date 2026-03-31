@@ -103,6 +103,8 @@ interface RateLimitState {
   pollRequestCount: number; // resets each poll for diagnostic logging
   pollFirst200: boolean; // track if we've seen any 200 this poll
   pollFirst500Body: string | null; // store first 500 body this poll
+  pollStatusCounts: Record<number, number>; // count of each HTTP status
+  pollErrors: number; // count of fetch exceptions (network errors)
 }
 
 const rateLimitState: RateLimitState = {
@@ -114,6 +116,8 @@ const rateLimitState: RateLimitState = {
   pollRequestCount: 0,
   pollFirst200: false,
   pollFirst500Body: null,
+  pollStatusCounts: {},
+  pollErrors: 0,
 };
 
 function isBackedOff(): boolean {
@@ -145,11 +149,16 @@ export function resetPollDiagnostics(): void {
   rateLimitState.pollRequestCount = 0;
   rateLimitState.pollFirst200 = false;
   rateLimitState.pollFirst500Body = null;
+  rateLimitState.pollStatusCounts = {};
+  rateLimitState.pollErrors = 0;
 }
 
 /** Get poll diagnostic summary for logging. */
 export function getPollDiagnostics(): string {
-  return `requests=${rateLimitState.pollRequestCount}, any200=${rateLimitState.pollFirst200}, first500Body=${rateLimitState.pollFirst500Body ? `"${rateLimitState.pollFirst500Body}"` : "null"}, total429s=${rateLimitState.total429s}`;
+  const statuses = Object.entries(rateLimitState.pollStatusCounts)
+    .map(([code, count]) => `${code}:${count}`)
+    .join(",");
+  return `reqs=${rateLimitState.pollRequestCount}, statuses={${statuses}}, fetchErrors=${rateLimitState.pollErrors}, first500=${rateLimitState.pollFirst500Body ? `"${rateLimitState.pollFirst500Body.slice(0, 150)}"` : "none"}`;
 }
 
 // ─── Core Types ──────────────────────────────────────────────────────────────
@@ -272,28 +281,34 @@ export async function findAvailability(
   const headers = buildHeaders(authToken);
   headers["Content-Type"] = "application/json";
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers,
-    body,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers,
+      body,
+    });
+  } catch (err) {
+    rateLimitState.pollErrors++;
+    if (rateLimitState.pollErrors <= 3) {
+      console.error(`[Resy] Fetch exception venue=${venueId} date=${date}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return null;
+  }
+
+  // Track status codes
+  rateLimitState.pollStatusCounts[response.status] = (rateLimitState.pollStatusCounts[response.status] ?? 0) + 1;
 
   // Log first 2 requests per poll to diagnose issues
   if (rateLimitState.pollRequestCount <= 2) {
-    const respHeaders = Object.fromEntries(response.headers.entries());
-    console.log(`[Resy] /4/find ${response.status} venue=${venueId} date=${date} respHeaders=${JSON.stringify({
-      "content-type": respHeaders["content-type"],
-      "x-cdn": respHeaders["x-cdn"],
-      server: respHeaders["server"],
-    })}`);
+    console.log(`[Resy] /4/find ${response.status} venue=${venueId} date=${date}`);
   }
 
   if (response.status === 500) {
-    // Capture the first 500 body per poll for diagnostics
     if (rateLimitState.pollFirst500Body === null) {
       const respBody = await response.text().catch(() => "");
       rateLimitState.pollFirst500Body = respBody.slice(0, 500);
-      console.log(`[Resy] First 500 body this poll (venue=${venueId}, date=${date}): "${rateLimitState.pollFirst500Body}"`);
+      console.log(`[Resy] First 500 body (venue=${venueId}, date=${date}): "${rateLimitState.pollFirst500Body}"`);
     }
     return null;
   }
@@ -303,14 +318,16 @@ export async function findAvailability(
     rateLimitState.consecutiveErrors++;
     const backoff = calculateBackoff();
     rateLimitState.backoffUntil = Date.now() + backoff;
-    console.warn(`[Resy] 429 Rate Limited — backing off ${Math.round(backoff / 1000)}s`);
+    console.warn(`[Resy] 429 — backing off ${Math.round(backoff / 1000)}s`);
     return null;
   }
 
   if (!response.ok) {
     rateLimitState.consecutiveErrors++;
-    const text = await response.text().catch(() => "");
-    console.log(`[Resy] /4/find ${response.status} venue=${venueId}: ${text.slice(0, 200)}`);
+    if (rateLimitState.pollRequestCount <= 3) {
+      const text = await response.text().catch(() => "");
+      console.log(`[Resy] /4/find ${response.status} venue=${venueId}: ${text.slice(0, 300)}`);
+    }
     return null;
   }
 
@@ -318,8 +335,8 @@ export async function findAvailability(
   rateLimitState.pollFirst200 = true;
   const data: ResyFindResponse = await response.json();
   const slotCount = data.results?.venues?.[0]?.slots?.length ?? 0;
-  if (slotCount > 0) {
-    console.log(`[Resy] Found ${slotCount} slots for venue ${venueId} on ${date}`);
+  if (slotCount > 0 && rateLimitState.pollRequestCount <= 5) {
+    console.log(`[Resy] Found ${slotCount} slots venue=${venueId} date=${date}`);
   }
   return data;
 }

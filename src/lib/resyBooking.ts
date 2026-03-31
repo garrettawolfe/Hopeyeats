@@ -235,11 +235,12 @@ export async function getSlotDetails(
       party_size: partySize.toString(),
     });
 
-    console.log(`[ResyBook] Details request: config_id=${configId.slice(0, 80)}... day=${date} party=${partySize}`);
+    console.log(`[ResyBook] Details request: config_id=${configId.slice(0, 100)} day=${date} party=${partySize}`);
 
+    // Use widget origin — the real Resy booking flow happens inside a widgets.resy.com iframe
     const response = await fetch(`${RESY_API_BASE}/3/details`, {
       method: "POST",
-      headers: buildAuthHeaders(authToken),
+      headers: buildAuthHeaders(authToken, true),
       body: body.toString(),
     });
 
