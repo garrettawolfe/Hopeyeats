@@ -130,6 +130,13 @@ function HomeInner() {
   const [activePartySize, setActivePartySize] = useState<2 | 4>(2);
   const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
   const [appMode, setAppMode] = useState<"monitor" | "snipe">("monitor");
+  const [debugLog, setDebugLog] = useState<string[]>([]);
+  const [showDebugLog, setShowDebugLog] = useState(false);
+
+  const addLog = useCallback((msg: string) => {
+    const ts = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    setDebugLog((prev) => [`[${ts}] ${msg}`, ...prev].slice(0, 200));
+  }, []);
 
   // Refs for latest values (avoid stale closures)
   const settingsRef = useRef(settings);
@@ -238,6 +245,7 @@ function HomeInner() {
     setIsPolling(true);
     setScanProgress(null);
     setActivityFeed([]);
+    addLog(`Poll starting — ${monitoredIds.size} restaurants, auth=${!!resyAuthRef.current?.authenticated}`);
 
     const currentAuth = resyAuthRef.current;
     const currentSettings = settingsRef.current;
@@ -291,7 +299,13 @@ function HomeInner() {
 
               setAllSlots((prev) => {
                 const next = new Map(prev);
-                next.set(diff.restaurant.id, diff.currentSlots ?? []);
+                // Only update if we got actual data — don't wipe slots on empty poll (500 = no data, not "no availability")
+                const newSlots = diff.currentSlots ?? [];
+                const existing = prev.get(diff.restaurant.id) ?? [];
+                if (newSlots.length > 0 || existing.length === 0) {
+                  next.set(diff.restaurant.id, newSlots);
+                }
+                // If newSlots is empty but we had existing slots, keep them (API might have returned 500)
                 return next;
               });
 
@@ -339,6 +353,11 @@ function HomeInner() {
               setLastPollTime(new Date().toISOString());
               setPollCount((c) => c + 1);
 
+              const totalSlots = result.diffs.reduce((s, d) => s + (d.currentSlots?.length ?? 0), 0);
+              const totalNew = result.diffs.reduce((s, d) => s + d.newSlots.length, 0);
+              const withSlots = result.diffs.filter((d) => (d.currentSlots?.length ?? 0) > 0).map((d) => d.restaurant.name);
+              addLog(`Poll done — ${result.diffs.length} checked, ${totalSlots} slots, ${totalNew} new. baseline=${result.isBaseline}${withSlots.length > 0 ? `. Avail: ${withSlots.join(", ")}` : ""}`);
+
               if (result.isBaseline) {
                 setNewSlotIds(new Set());
               }
@@ -362,14 +381,23 @@ function HomeInner() {
         }
       }
 
-      // Auto-book with slot pool: if any restaurant with autobook enabled has new matching slots, try all of them
-      if (currentAuth?.authenticated && !streamIsBaseline && autoBookIds.size > 0 && currentSettings) {
+      // Auto-book with slot pool: try all matching slots for autobook-enabled restaurants
+      // On baseline (first poll), use currentSlots; on subsequent polls, use newSlots
+      if (currentAuth?.authenticated && autoBookIds.size > 0 && currentSettings) {
+        addLog(`Auto-book check — ${autoBookIds.size} restaurants enabled, baseline=${streamIsBaseline}`);
         for (const diff of streamDiffs) {
-          if (diff.newSlots.length === 0 || !autoBookIds.has(diff.restaurant.id)) continue;
-          const matchingNew = diff.newSlots.filter((s) => slotMatchesFilters(s, currentSettings));
+          if (!autoBookIds.has(diff.restaurant.id)) continue;
+          const candidates = streamIsBaseline ? (diff.currentSlots ?? []) : diff.newSlots;
+          if (candidates.length === 0) {
+            addLog(`Auto-book ${diff.restaurant.name}: 0 candidates (${streamIsBaseline ? "baseline, no currentSlots" : "no newSlots"})`);
+            continue;
+          }
+          const matchingNew = candidates.filter((s) => slotMatchesFilters(s, currentSettings));
+          addLog(`Auto-book ${diff.restaurant.name}: ${candidates.length} candidates, ${matchingNew.length} match filters`);
           if (matchingNew.length > 0) {
             // Use slot pool retry — send all matching slots at once
             const slots = matchingNew.map(s => ({ configToken: s.configToken, date: s.date, time: s.time }));
+            addLog(`Auto-book ${diff.restaurant.name}: attempting ${slots.length} slots — ${slots.map(s => `${s.date} ${s.time}`).join(", ")}`);
             try {
               const res = await fetch("/api/resy-book", {
                 method: "POST",
@@ -378,6 +406,7 @@ function HomeInner() {
                   slots,
                   partySize: currentSettings.partySize ?? 2,
                   restaurantName: diff.restaurant.name,
+                  authToken: currentAuth.authToken,
                 }),
               });
               const data = await res.json();
@@ -392,19 +421,23 @@ function HomeInner() {
                 timestamp: new Date().toISOString(),
               };
               setBookingLog((prev) => [log, ...prev].slice(0, 50));
+              addLog(`Auto-book ${diff.restaurant.name}: ${data.success ? "SUCCESS" : "FAILED"} — ${data.error ?? `${log.date} ${log.time}`}`);
               if (data.success) {
                 addToast(`Auto-booked ${diff.restaurant.name} — ${log.date} at ${log.time}`, "success", 8000);
+              } else {
+                addToast(`Auto-book failed: ${diff.restaurant.name} — ${data.error ?? "unknown error"}`, "error", 5000);
               }
-            } catch {
-              // Auto-book failed silently
+            } catch (e) {
+              addLog(`Auto-book ${diff.restaurant.name}: EXCEPTION — ${e instanceof Error ? e.message : String(e)}`);
             }
           }
         }
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
-        // Timed out, will retry next cycle
+        addLog("Poll timed out — will retry next cycle");
       } else {
+        addLog(`Poll error: ${err instanceof Error ? err.message : String(err)}`);
         console.error("[WolfePack] Poll error:", err);
       }
     } finally {
@@ -796,6 +829,37 @@ function HomeInner() {
             </div>
           </div>
         )}
+
+        {/* Debug Log */}
+        <div className="mb-4">
+          <button
+            onClick={() => setShowDebugLog(!showDebugLog)}
+            className="text-xs text-stone-400 hover:text-stone-600 transition-colors flex items-center gap-1"
+          >
+            {showDebugLog ? "▼" : "▶"} Debug Log ({debugLog.length})
+            {debugLog.length > 0 && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setDebugLog([]); }}
+                className="ml-2 text-stone-300 hover:text-red-400"
+              >
+                clear
+              </button>
+            )}
+          </button>
+          {showDebugLog && (
+            <div className="mt-2 bg-stone-900 text-stone-300 rounded-xl p-3 max-h-48 overflow-y-auto font-mono text-[10px] leading-relaxed select-all">
+              {debugLog.length === 0 ? (
+                <span className="text-stone-500">No logs yet — waiting for first poll...</span>
+              ) : (
+                debugLog.map((line, i) => (
+                  <div key={i} className={line.includes("SUCCESS") ? "text-emerald-400" : line.includes("FAILED") || line.includes("EXCEPTION") ? "text-red-400" : "text-stone-300"}>
+                    {line}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Auth banner */}
         {!resyAuth?.authenticated && (

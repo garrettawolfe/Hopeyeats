@@ -1,16 +1,34 @@
 import { NextResponse } from "next/server";
-import { autoBook, autoBookWithRetry, getCachedAuth } from "@/lib/resyBooking";
+import { autoBook, autoBookWithRetry, getCachedAuth, setAuthFromToken } from "@/lib/resyBooking";
 
 /**
  * POST /api/resy-book
- * Auto-book a specific slot. Requires prior auth via /api/resy-auth.
+ * Auto-book a specific slot.
  *
- * Body: { configToken, date, partySize, restaurantName, time }
- *   OR: { slots: [{configToken, date, time}], partySize, restaurantName } for slot pool retry
+ * Body: { configToken, date, partySize, restaurantName, time, authToken? }
+ *   OR: { slots: [{configToken, date, time}], partySize, restaurantName, authToken? } for slot pool retry
+ *
+ * Auth: Uses cached auth if available, otherwise validates authToken from body.
  */
 export async function POST(request: Request) {
   try {
-    const auth = getCachedAuth();
+    const body = await request.json();
+    const { configToken, date, partySize, restaurantName, time, slots, authToken } = body;
+
+    // Try cached auth first; if unavailable, validate the token from request body
+    let auth = getCachedAuth();
+    if (!auth && authToken) {
+      console.log("[Book] No cached auth, validating token from request body");
+      const result = await setAuthFromToken(authToken);
+      if ("error" in result) {
+        return NextResponse.json(
+          { error: `Auth failed: ${result.error}` },
+          { status: 401 },
+        );
+      }
+      auth = result;
+    }
+
     if (!auth) {
       return NextResponse.json(
         { error: "Not authenticated — log in to Resy first" },
@@ -24,9 +42,6 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-
-    const body = await request.json();
-    const { configToken, date, partySize, restaurantName, time, slots } = body;
 
     // Slot pool mode: try multiple slots with retry
     if (slots && Array.isArray(slots) && slots.length > 0) {

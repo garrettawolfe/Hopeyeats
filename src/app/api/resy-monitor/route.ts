@@ -224,9 +224,9 @@ export async function POST(request: Request) {
           }
         }
 
-        // Delay between restaurant batches (1-2s)
+        // Delay between restaurant batches (300-600ms)
         if (batchStart + BATCH_SIZE < pollTargets.length) {
-          await delay(1000 + Math.random() * 1000);
+          await delay(300 + Math.random() * 300);
         }
       }
 
