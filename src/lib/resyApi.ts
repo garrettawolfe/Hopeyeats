@@ -230,9 +230,9 @@ export async function findAvailability(
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 
-  // Gap between requests: 500-1000ms to avoid Resy IP blocks
+  // Gap between requests: 200-400ms (fast enough to cover all venues within time budget)
   const timeSinceLast = Date.now() - rateLimitState.lastRequestAt;
-  const minGap = 500 + Math.random() * 500;
+  const minGap = 200 + Math.random() * 200;
   if (timeSinceLast < minGap) {
     await new Promise((resolve) => setTimeout(resolve, minGap - timeSinceLast));
   }
@@ -466,23 +466,10 @@ export async function checkVenueAvailability(
   if (dates.length === 0) return [];
 
   const allSlots: AvailabilitySlot[] = [];
-  const startDate = dates[0];
-  const endDate = dates[dates.length - 1];
 
-  // Phase 1: Calendar check (only with auth — Resy returns 500 without it)
-  let datesToCheck: string[];
-  if (authToken) {
-    const calendarDates = await fetchVenueCalendar(venueId, startDate, endDate, partySize, authToken);
-    if (calendarDates.length > 0) {
-      datesToCheck = calendarDates;
-    } else {
-      // Calendar empty/failed — check fewer dates to stay fast
-      datesToCheck = dates.slice(0, Math.min(dates.length, 5));
-    }
-  } else {
-    // No auth — skip calendar (it 500s without auth), check minimal dates
-    datesToCheck = dates.slice(0, Math.min(dates.length, 2));
-  }
+  // Skip calendar entirely — it consistently returns 500 with empty body,
+  // wasting an API call + delay per restaurant. Just check dates directly.
+  const datesToCheck = dates.slice(0, Math.min(dates.length, 3));
 
   // Phase 2: Check dates in parallel batches of 2
   for (let i = 0; i < datesToCheck.length; i += 2) {
@@ -512,9 +499,9 @@ export async function checkVenueAvailability(
       allSlots.push(...slots);
     }
 
-    // Delay between batches (500-1000ms)
+    // Delay between batches (200-400ms)
     if (i + 2 < datesToCheck.length) {
-      await new Promise((resolve) => setTimeout(resolve, 500 + Math.random() * 500));
+      await new Promise((resolve) => setTimeout(resolve, 200 + Math.random() * 200));
     }
   }
 
