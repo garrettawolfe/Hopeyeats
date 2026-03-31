@@ -1035,6 +1035,15 @@ function HomeInner() {
                 onBook={handleBook}
                 bookingInProgress={bookingInProgress}
                 lastChecked={lastCheckedMap.get(r.id) ?? null}
+                partySize={settings?.partySize ?? 2}
+                lastBookingFailure={(() => {
+                  // #13: Find most recent failure for this restaurant (only if no subsequent success)
+                  const logs = bookingLog.filter(l => l.restaurantName === r.name);
+                  if (logs.length === 0) return null;
+                  const latest = logs[0]; // bookingLog is newest-first
+                  if (latest.status === "success") return null;
+                  return { time: latest.time, error: latest.error ?? "Unknown error", timestamp: latest.timestamp };
+                })()}
               />
             ))}
           </div>

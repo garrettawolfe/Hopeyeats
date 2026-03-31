@@ -106,15 +106,35 @@ export async function setAuthFromToken(
 
 // ─── Headers ────────────────────────────────────────────────────────────────
 
-const BOOKING_USER_AGENTS = [
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+// #1/#2: Coherent browser personas for booking requests (UA + Sec-CH-UA + Accept-Language)
+const BOOKING_PERSONAS = [
+  {
+    ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    secChUa: '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    secChUaMobile: "?0",
+    secChUaPlatform: '"macOS"',
+    acceptLang: "en-US,en;q=0.9",
+  },
+  {
+    ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    secChUa: '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    secChUaMobile: "?0",
+    secChUaPlatform: '"Windows"',
+    acceptLang: "en-US,en;q=0.9,es;q=0.8",
+  },
+  {
+    ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+    secChUa: "",  // Safari doesn't send Sec-CH-UA
+    secChUaMobile: "",
+    secChUaPlatform: "",
+    acceptLang: "en-US,en;q=0.9",
+  },
 ];
 
 function buildAuthHeaders(authToken: string, forBooking = false): Record<string, string> {
   const origin = forBooking ? "https://widgets.resy.com" : "https://resy.com";
   const cookieHeaderValue = getCookieHeader();
+  const persona = BOOKING_PERSONAS[Math.floor(Math.random() * BOOKING_PERSONAS.length)];
 
   const headers: Record<string, string> = {
     Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
@@ -126,13 +146,19 @@ function buildAuthHeaders(authToken: string, forBooking = false): Record<string,
     Referer: `${origin}/`,
     "X-Origin": origin,
     "Cache-Control": "no-cache",
-    "User-Agent": BOOKING_USER_AGENTS[Math.floor(Math.random() * BOOKING_USER_AGENTS.length)],
-    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": persona.ua,
+    "Accept-Language": persona.acceptLang,  // #2: Rotated
     "Accept-Encoding": "gzip, deflate, br",
     "Sec-Fetch-Dest": "empty",
     "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": forBooking ? "same-site" : "same-site",
+    "Sec-Fetch-Site": "same-site",
   };
+  // #1: Sec-CH-UA headers (Chrome only, Safari doesn't send them)
+  if (persona.secChUa) {
+    headers["Sec-CH-UA"] = persona.secChUa;
+    headers["Sec-CH-UA-Mobile"] = persona.secChUaMobile;
+    headers["Sec-CH-UA-Platform"] = persona.secChUaPlatform;
+  }
   if (cookieHeaderValue) {
     headers["Cookie"] = cookieHeaderValue;
   }
@@ -248,9 +274,8 @@ export async function getSlotDetails(
   date: string,
   partySize: number,
 ): Promise<SlotDetails | SlotDetailsError> {
+  const detailsStart = Date.now(); // #10: Booking attempt timing
   try {
-    console.log(`[ResyBook] Details request: config_id=${configId.slice(0, 100)} day=${date} party=${partySize}`);
-
     // Warm up Imperva cookies if needed (ensures WAF cookies are fresh)
     await warmUpImperva();
 
@@ -268,29 +293,74 @@ export async function getSlotDetails(
       }),
     });
 
+    const detailsMs = Date.now() - detailsStart;
+
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      console.error(`[ResyBook] Details failed: ${response.status} — ${text.slice(0, 500)}`);
-      return { error: `Details ${response.status}: ${text.slice(0, 200)}` } as SlotDetailsError;
+      // #10: Log timing with status for attribution
+      console.error(`[ResyBook] Details ${response.status} in ${detailsMs}ms — ${text.slice(0, 300)}`);
+      return { error: `Details ${response.status} (${detailsMs}ms): ${text.slice(0, 200)}` } as SlotDetailsError;
     }
 
     const data = await response.json();
     const bookToken = data.book_token?.value;
 
     if (!bookToken) {
-      console.error("[ResyBook] No book_token in details response. Keys:", Object.keys(data));
+      console.error(`[ResyBook] No book_token in ${detailsMs}ms. Keys: ${Object.keys(data).join(",")}`);
       return { error: "No book_token in response" } as SlotDetailsError;
     }
 
+    // #10: Log successful details fetch with timing
+    console.log(`[ResyBook] Details OK in ${detailsMs}ms — ${date} party=${partySize}`);
     return {
       bookToken,
       cancellationPolicy: data.cancellation?.display?.policy ?? undefined,
       depositAmount: data.book_token?.deposit_amount ?? undefined,
     };
   } catch (err) {
-    console.error("[ResyBook] Details error:", err);
+    const detailsMs = Date.now() - detailsStart;
+    console.error(`[ResyBook] Details EXCEPTION in ${detailsMs}ms: ${err instanceof Error ? err.message : String(err)}`);
     return { error: err instanceof Error ? err.message : "Details fetch error" } as SlotDetailsError;
   }
+}
+
+/**
+ * #6: Fetch slot details in parallel for multiple slots.
+ * Returns first successful result, or all errors if none succeed.
+ * This avoids sequential /3/details calls when auto-booking.
+ */
+export async function getSlotDetailsParallel(
+  authToken: string,
+  slots: Array<{ configToken: string; date: string; time: string }>,
+  partySize: number,
+): Promise<{ slot: typeof slots[0]; details: SlotDetails } | { errors: string[] }> {
+  const batchStart = Date.now();
+  console.log(`[ResyBook] #6 Parallel details fetch: ${slots.length} slots`);
+
+  // Fetch all details in parallel
+  const results = await Promise.all(
+    slots.map(async (slot) => {
+      const details = await getSlotDetails(authToken, slot.configToken, slot.date, partySize);
+      return { slot, details };
+    }),
+  );
+
+  const batchMs = Date.now() - batchStart;
+
+  // Return first success
+  for (const { slot, details } of results) {
+    if (!("error" in details)) {
+      console.log(`[ResyBook] #6 Parallel: found bookable slot ${slot.date} ${slot.time} in ${batchMs}ms (${slots.length} fetched)`);
+      return { slot, details };
+    }
+  }
+
+  // All failed
+  const errors = results.map(({ slot, details }) =>
+    `${slot.date} ${slot.time}: ${"error" in details ? details.error : "unknown"}`
+  );
+  console.log(`[ResyBook] #6 Parallel: all ${slots.length} failed in ${batchMs}ms`);
+  return { errors };
 }
 
 // ─── Step 3: Book the Reservation ───────────────────────────────────────────

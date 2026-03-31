@@ -15,21 +15,99 @@ const RESY_API_BASE = "https://api.resy.com";
 // The production API key embedded in Resy's frontend JS bundle.
 const RESY_API_KEY = "VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5";
 
-// ─── Anti-Detection: User-Agent Rotation ─────────────────────────────────────
+// ─── Anti-Detection: Fingerprint Rotation (#1 Sec-CH-UA, #2 Accept-Language, #3 Referer) ─
 
-const USER_AGENTS = [
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0",
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0",
+// Each "persona" is a coherent set of UA + Sec-CH-UA + Accept-Language + Referer
+// so headers don't contradict each other within a single request.
+interface BrowserPersona {
+  userAgent: string;
+  secChUa: string;          // #1: Sec-CH-UA header (Chrome 90+ sends this)
+  secChUaMobile: string;
+  secChUaPlatform: string;
+  acceptLanguage: string;   // #2: Rotated per-persona
+}
+
+const PERSONAS: BrowserPersona[] = [
+  {
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    secChUa: '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    secChUaMobile: "?0",
+    secChUaPlatform: '"macOS"',
+    acceptLanguage: "en-US,en;q=0.9",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    secChUa: '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    secChUaMobile: "?0",
+    secChUaPlatform: '"Windows"',
+    acceptLanguage: "en-US,en;q=0.9,es;q=0.8",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    secChUa: '"Google Chrome";v="130", "Chromium";v="130", "Not_A Brand";v="24"',
+    secChUaMobile: "?0",
+    secChUaPlatform: '"macOS"',
+    acceptLanguage: "en,en-US;q=0.9",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+    secChUa: '"Microsoft Edge";v="130", "Chromium";v="130", "Not_A Brand";v="24"',
+    secChUaMobile: "?0",
+    secChUaPlatform: '"Windows"',
+    acceptLanguage: "en-US,en;q=0.9,fr;q=0.8",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+    secChUa: "",  // Safari doesn't send Sec-CH-UA
+    secChUaMobile: "",
+    secChUaPlatform: "",
+    acceptLanguage: "en-US,en;q=0.9",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0",
+    secChUa: "",  // Firefox doesn't send Sec-CH-UA
+    secChUaMobile: "",
+    secChUaPlatform: "",
+    acceptLanguage: "en-US,en;q=0.5",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:134.0) Gecko/20100101 Firefox/134.0",
+    secChUa: "",
+    secChUaMobile: "",
+    secChUaPlatform: "",
+    acceptLanguage: "en-GB,en;q=0.8,en-US;q=0.6",
+  },
+  {
+    userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    secChUa: '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    secChUaMobile: "?0",
+    secChUaPlatform: '"Linux"',
+    acceptLanguage: "en-US,en;q=0.9",
+  },
 ];
 
+// #3: Referer rotation — real users arrive from different pages
+const REFERERS = [
+  "https://resy.com/",
+  "https://resy.com/cities/ny",
+  "https://resy.com/cities/ny/find",
+  "https://resy.com/cities/mia",
+  "https://www.google.com/",
+];
+
+// Pick a persona per poll cycle (consistent within a poll, varies between polls)
+let currentPersona: BrowserPersona = PERSONAS[0];
+
+function rotatePersona(): void {
+  currentPersona = PERSONAS[Math.floor(Math.random() * PERSONAS.length)];
+}
+
+function randomReferer(): string {
+  return REFERERS[Math.floor(Math.random() * REFERERS.length)];
+}
+
 function randomUserAgent(): string {
-  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+  return currentPersona.userAgent;
 }
 
 // ─── Cookie Jar (Imperva WAF) ──────────────────────────────────────────────
@@ -213,18 +291,29 @@ export function getPollDiagnostics(): string {
 let lastWarmUpAt = 0;
 const WARMUP_INTERVAL_MS = 45_000; // re-warm every 45s
 
+/** #5: Check if cookie jar has the required Imperva cookies for API access. */
+export function hasValidCookies(): boolean {
+  const names = Array.from(cookieJar.keys());
+  const hasVisid = names.some(n => n.startsWith("visid_incap_"));
+  const hasNlbi = names.some(n => n.startsWith("nlbi_"));
+  return hasVisid && hasNlbi;
+}
+
 export async function warmUpImperva(): Promise<void> {
   const now = Date.now();
-  if (now - lastWarmUpAt < WARMUP_INTERVAL_MS && cookieJar.size > 0) return;
+  if (now - lastWarmUpAt < WARMUP_INTERVAL_MS && hasValidCookies()) return;
 
   // Clear stale cookies — mixing cookies from different Imperva sessions causes 500s
   cookieJar.clear();
 
-  const ua = randomUserAgent();
-  const commonHeaders = {
-    "User-Agent": ua,
+  // Rotate browser persona for this poll cycle (#1/#2/#3 attribution)
+  rotatePersona();
+  const persona = currentPersona;
+
+  const commonHeaders: Record<string, string> = {
+    "User-Agent": persona.userAgent,
     Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Language": persona.acceptLanguage,
     "Accept-Encoding": "gzip, deflate, br",
     "Cache-Control": "no-cache",
     "Sec-Fetch-Dest": "document",
@@ -233,6 +322,12 @@ export async function warmUpImperva(): Promise<void> {
     "Sec-Fetch-User": "?1",
     "Upgrade-Insecure-Requests": "1",
   };
+  // Add Sec-CH-UA for Chrome/Edge personas
+  if (persona.secChUa) {
+    commonHeaders["Sec-CH-UA"] = persona.secChUa;
+    commonHeaders["Sec-CH-UA-Mobile"] = persona.secChUaMobile;
+    commonHeaders["Sec-CH-UA-Platform"] = persona.secChUaPlatform;
+  }
 
   try {
     // Step 1: Hit resy.com to get Imperva cookies for the main domain
@@ -263,12 +358,19 @@ export async function warmUpImperva(): Promise<void> {
     captureResponseCookies(r2);
 
     lastWarmUpAt = now;
+
+    // #11: Validate warm-up cookies — log what we got and whether it's sufficient
     const cookieNames = Array.from(cookieJar.keys()).join(", ");
-    console.log(`[Resy] Warm-up resy.com=${r1.status} api=${r2.status} — cookies: [${cookieNames}]`);
+    const valid = hasValidCookies();
+    console.log(`[Resy] Warm-up resy=${r1.status} api=${r2.status} valid=${valid} persona=${persona.userAgent.includes("Chrome") ? "Chrome" : persona.userAgent.includes("Firefox") ? "Firefox" : persona.userAgent.includes("Safari") ? "Safari" : "Edge"} cookies=[${cookieNames}]`);
+    if (!valid) {
+      console.warn(`[Resy] Warm-up INCOMPLETE — missing required Imperva cookies (need visid_incap + nlbi). Got: [${cookieNames}]`);
+    }
   } catch (err) {
     // Even if warm-up partially fails, keep whatever cookies we got
     lastWarmUpAt = now;
-    console.warn(`[Resy] Warm-up failed: ${err instanceof Error ? err.message : String(err)}`);
+    const cookieNames = Array.from(cookieJar.keys()).join(", ");
+    console.warn(`[Resy] Warm-up FAILED: ${err instanceof Error ? err.message : String(err)} — cookies so far: [${cookieNames}]`);
   }
 }
 
@@ -327,15 +429,25 @@ export interface AvailabilitySlot {
 // ─── Headers ─────────────────────────────────────────────────────────────────
 
 function buildHeaders(authToken?: string): Record<string, string> {
+  const persona = currentPersona;
+  const referer = randomReferer(); // #3: Varied referer
+
   const headers: Record<string, string> = {
     Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
     Accept: "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Language": persona.acceptLanguage,  // #2: Rotated per-persona
     "Cache-Control": "no-cache",
     Origin: "https://resy.com",
-    Referer: "https://resy.com/",
-    "User-Agent": randomUserAgent(),
+    Referer: referer,
+    "User-Agent": persona.userAgent,
   };
+
+  // #1: Sec-CH-UA headers (Chrome/Edge only — Safari/Firefox don't send them)
+  if (persona.secChUa) {
+    headers["Sec-CH-UA"] = persona.secChUa;
+    headers["Sec-CH-UA-Mobile"] = persona.secChUaMobile;
+    headers["Sec-CH-UA-Platform"] = persona.secChUaPlatform;
+  }
 
   if (authToken) {
     headers["X-Resy-Auth-Token"] = authToken;
@@ -375,9 +487,10 @@ export async function findAvailability(
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 
-  // Gap between requests: 200-400ms (fast enough to cover all venues within time budget)
+  // #4: Gaussian-like jitter (150-800ms) instead of uniform 200-400ms — more human-like
   const timeSinceLast = Date.now() - rateLimitState.lastRequestAt;
-  const minGap = 200 + Math.random() * 200;
+  const r = (Math.random() + Math.random() + Math.random()) / 3; // ~gaussian centered at 0.5
+  const minGap = 150 + r * 650; // 150-800ms with center ~475ms
   if (timeSinceLast < minGap) {
     await new Promise((resolve) => setTimeout(resolve, minGap - timeSinceLast));
   }
@@ -643,15 +756,12 @@ export async function checkVenueAvailability(
 ): Promise<AvailabilitySlot[]> {
   if (dates.length === 0) return [];
 
+  const venueStart = Date.now(); // #9: Per-restaurant timing
   const allSlots: AvailabilitySlot[] = [];
 
-  // Skip calendar entirely — it consistently returns 500 with empty body,
-  // wasting an API call + delay per restaurant. Just check dates directly.
   const datesToCheck = dates.slice(0, Math.min(dates.length, maxDates));
 
-  // Phase 2: Check dates in parallel batches of 2
   for (let i = 0; i < datesToCheck.length; i += 2) {
-    // Only stop on actual 429 rate limits (not 500s which are normal "no data")
     if (rateLimitState.total429s > 0 && rateLimitState.consecutiveErrors >= 3) {
       console.warn(`[Resy] Rate limited (${rateLimitState.consecutiveErrors} 429 errors), stopping venue ${venueName}`);
       break;
@@ -663,7 +773,7 @@ export async function checkVenueAvailability(
         try {
           const response = await findAvailability(venueId, date, partySize, authToken);
           if (response) {
-            rateLimitState.consecutiveErrors = 0; // Reset on success
+            rateLimitState.consecutiveErrors = 0;
             return parseSlots(response, venueId, venueName, resyBaseUrl, partySize);
           }
           return [];
@@ -677,10 +787,17 @@ export async function checkVenueAvailability(
       allSlots.push(...slots);
     }
 
-    // Delay between batches (200-400ms)
+    // #4: Gaussian-like inter-batch jitter (150-600ms)
     if (i + 2 < datesToCheck.length) {
-      await new Promise((resolve) => setTimeout(resolve, 200 + Math.random() * 200));
+      const r = (Math.random() + Math.random() + Math.random()) / 3;
+      await new Promise((resolve) => setTimeout(resolve, 150 + r * 450));
     }
+  }
+
+  // #9: Log per-restaurant timing (only for restaurants that found slots or took >2s)
+  const venueMs = Date.now() - venueStart;
+  if (allSlots.length > 0 || venueMs > 2000) {
+    console.log(`[Resy] ${venueName}: ${allSlots.length} slots in ${(venueMs / 1000).toFixed(1)}s (${datesToCheck.length} dates)`);
   }
 
   return allSlots;

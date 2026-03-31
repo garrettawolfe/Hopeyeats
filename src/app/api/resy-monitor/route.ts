@@ -10,6 +10,7 @@ import {
   isQuietHours,
   getRecommendedInterval,
   warmUpImperva,
+  hasValidCookies,
 } from "@/lib/resyApi";
 import {
   createMonitorState,
@@ -24,7 +25,7 @@ import {
   sendNotifications,
   type NotificationConfig,
 } from "@/lib/notifications";
-import { getCachedAuth, setAuthFromToken, getSlotDetails, bookReservation, fetchExistingReservations, hasTimeConflict } from "@/lib/resyBooking";
+import { getCachedAuth, setAuthFromToken, getSlotDetails, getSlotDetailsParallel, bookReservation, fetchExistingReservations, hasTimeConflict } from "@/lib/resyBooking";
 
 export const maxDuration = 120;
 
@@ -179,12 +180,20 @@ export async function POST(request: Request) {
       // Warm up Imperva cookies before API calls (GET resy.com → fresh WAF cookies)
       await warmUpImperva();
 
-      // Process in batches of 2 restaurants at a time (gentler on Resy API)
-      const BATCH_SIZE = quiet ? 1 : 2;
+      // #8: Larger batch size for speed (3 during peak, 2 quiet, 1 if warm-up failed)
+      const cookiesValid = hasValidCookies();
+      const BATCH_SIZE = !cookiesValid ? 1 : quiet ? 2 : 3;
+      let consecutiveAllFailBatches = 0; // #7: Track consecutive all-fail batches
 
       for (let batchStart = 0; batchStart < pollTargets.length; batchStart += BATCH_SIZE) {
         if (Date.now() - pollStart > TIME_BUDGET_MS) {
-          console.warn(`[Poll #${pollNum}] Time budget hit after ${processedCount}/${pollTargets.length}`);
+          console.warn(`[Poll #${pollNum}] #7 Time budget hit after ${processedCount}/${pollTargets.length}`);
+          break;
+        }
+
+        // #7: Early exit if first 2 batches returned all 500s (don't waste time)
+        if (consecutiveAllFailBatches >= 2 && processedCount >= 4) {
+          console.warn(`[Poll #${pollNum}] #7 Early exit — ${consecutiveAllFailBatches} consecutive batches returned 0 slots (likely WAF blocked)`);
           break;
         }
 
@@ -230,6 +239,14 @@ export async function POST(request: Request) {
             } as SerializableSlotDiff;
           }),
         );
+
+        // #7: Track consecutive all-fail batches for early exit
+        const batchHasSlots = batchResults.some(r => (r.currentSlots?.length ?? 0) > 0);
+        if (batchHasSlots) {
+          consecutiveAllFailBatches = 0;
+        } else {
+          consecutiveAllFailBatches++;
+        }
 
         // Stream each result + activity feed
         for (const serialized of batchResults) {
@@ -284,21 +301,35 @@ export async function POST(request: Request) {
               existing = await fetchExistingReservations(auth.authToken);
             } catch { /* continue without conflict check */ }
 
-            let booked = false;
-            for (const slot of matching) {
-              if (booked) break;
-              if (hasTimeConflict(existing, slot.date, slot.time)) continue;
+            // Filter out time conflicts before attempting booking
+            const nonConflicting = matching.filter(slot => !hasTimeConflict(existing, slot.date, slot.time));
+            if (nonConflicting.length === 0) continue;
 
-              const details = await getSlotDetails(auth.authToken, slot.configToken, slot.date, partySize);
-              if ("error" in details) {
-                console.log(`[AutoBook] ${serialized.restaurant.name} ${slot.date} ${slot.time}: ${details.error}`);
-                continue;
-              }
+            // #6: Fetch slot details in PARALLEL (all at once), then book first success
+            const slotsForDetails = nonConflicting.slice(0, 5).map(s => ({ configToken: s.configToken, date: s.date, time: s.time }));
+            const parallelResult = await getSlotDetailsParallel(auth.authToken, slotsForDetails, partySize);
 
+            if ("errors" in parallelResult) {
+              // All failed — log and stream failure for first slot
+              console.log(`[AutoBook] ${serialized.restaurant.name}: #6 all ${slotsForDetails.length} details failed`);
+              await write({
+                type: "booking",
+                restaurant: serialized.restaurant.name,
+                restaurantId: serialized.restaurant.id,
+                date: slotsForDetails[0].date,
+                time: slotsForDetails[0].time,
+                success: false,
+                error: `All ${slotsForDetails.length} slot details failed`,
+              });
+            } else {
+              // Got a bookable slot — try to book it
+              const { slot, details } = parallelResult;
+              const bookStart = Date.now();
               const result = await bookReservation(auth.authToken, details.bookToken, effectivePaymentId);
+              const bookMs = Date.now() - bookStart;
+
               if (result.success) {
-                booked = true;
-                console.log(`[AutoBook] BOOKED ${serialized.restaurant.name} ${slot.date} ${slot.time}`);
+                console.log(`[AutoBook] BOOKED ${serialized.restaurant.name} ${slot.date} ${slot.time} in ${bookMs}ms`);
                 await write({
                   type: "booking",
                   restaurant: serialized.restaurant.name,
@@ -309,7 +340,7 @@ export async function POST(request: Request) {
                   reservationId: result.reservationId,
                 });
               } else {
-                console.log(`[AutoBook] Failed ${serialized.restaurant.name} ${slot.date} ${slot.time}: ${result.error}`);
+                console.log(`[AutoBook] Failed ${serialized.restaurant.name} ${slot.date} ${slot.time} in ${bookMs}ms: ${result.error}`);
                 await write({
                   type: "booking",
                   restaurant: serialized.restaurant.name,
@@ -324,9 +355,10 @@ export async function POST(request: Request) {
           }
         }
 
-        // Delay between restaurant batches (300-600ms)
+        // #4: Gaussian-like jitter between restaurant batches (200-900ms, centered ~500ms)
         if (batchStart + BATCH_SIZE < pollTargets.length) {
-          await delay(300 + Math.random() * 300);
+          const r = (Math.random() + Math.random() + Math.random()) / 3;
+          await delay(200 + r * 700);
         }
       }
 

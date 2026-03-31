@@ -17,6 +17,13 @@ function formatDate(dateStr: string): string {
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
+// #13: Booking failure info passed from parent
+interface BookingFailure {
+  time: string;
+  error: string;
+  timestamp: string;
+}
+
 interface Props {
   restaurant: Restaurant;
   slots: AvailabilitySlot[];
@@ -29,6 +36,8 @@ interface Props {
   onBook: (slot: AvailabilitySlot) => void;
   bookingInProgress: string | null;
   lastChecked: string | null;
+  partySize?: number;          // #12: Current party size for filtering display
+  lastBookingFailure?: BookingFailure | null;  // #13: Last failure for this restaurant
 }
 
 export default function RestaurantMonitorCard({
@@ -43,6 +52,8 @@ export default function RestaurantMonitorCard({
   onBook,
   bookingInProgress,
   lastChecked,
+  partySize = 2,
+  lastBookingFailure,
 }: Props) {
   const hasSlots = slots.length > 0;
   const newCount = slots.filter((s) => newSlotIds.has(s.id)).length;
@@ -205,6 +216,12 @@ export default function RestaurantMonitorCard({
                             )}
                             <span className="font-medium">{formatTime12(slot.time)}</span>
                             <span className="text-[10px] text-stone-400">{slot.tableType}</span>
+                            {/* #12: Show max party if slot can't fit current party */}
+                            {slot.maxParty < partySize && (
+                              <span className="text-[10px] text-amber-500 font-medium" title={`Max ${slot.maxParty} guests`}>
+                                max {slot.maxParty}
+                              </span>
+                            )}
                             {isBooking && (
                               <span className="text-[10px] text-amber-600 font-medium">Booking...</span>
                             )}
@@ -217,6 +234,24 @@ export default function RestaurantMonitorCard({
               });
             })()}
           </div>
+        </div>
+      )}
+
+      {/* #13: Persistent booking failure banner (stays until next success) */}
+      {lastBookingFailure && (
+        <div className="border-t border-red-100 px-3 sm:px-5 py-2 bg-red-50/50">
+          <p className="text-[10px] text-red-600 truncate" title={lastBookingFailure.error}>
+            Last auto-book failed: {lastBookingFailure.error}
+          </p>
+        </div>
+      )}
+
+      {/* #14: Auto-book explanation when not authenticated */}
+      {isMonitored && !isAuthenticated && (
+        <div className="border-t border-amber-100 px-3 sm:px-5 py-2 bg-amber-50/30">
+          <p className="text-[10px] text-amber-600">
+            Connect your Resy account in Settings to enable auto-booking
+          </p>
         </div>
       )}
 
