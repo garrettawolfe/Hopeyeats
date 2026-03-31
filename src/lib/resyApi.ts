@@ -206,6 +206,45 @@ export function getPollDiagnostics(): string {
   return `reqs=${rateLimitState.pollRequestCount}, statuses={${statuses}}, fetchErrors=${rateLimitState.pollErrors}, cookies=[${cookieNames}]`;
 }
 
+// ─── Imperva Warm-Up ──────────────────────────────────────────────────────────
+// Fetch resy.com homepage to acquire fresh Imperva cookies before API calls.
+// This helps bypass IP-reputation based blocks on datacenter IPs.
+
+let lastWarmUpAt = 0;
+const WARMUP_INTERVAL_MS = 45_000; // re-warm every 45s
+
+export async function warmUpImperva(): Promise<void> {
+  const now = Date.now();
+  if (now - lastWarmUpAt < WARMUP_INTERVAL_MS && cookieJar.size > 0) return;
+
+  try {
+    const ua = randomUserAgent();
+    const response = await fetch("https://resy.com", {
+      method: "GET",
+      headers: {
+        "User-Agent": ua,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+      },
+      redirect: "follow",
+    });
+
+    captureResponseCookies(response);
+    lastWarmUpAt = now;
+    const cookieNames = Array.from(cookieJar.keys()).join(", ");
+    console.log(`[Resy] Warm-up ${response.status} — cookies: [${cookieNames}]`);
+  } catch (err) {
+    console.warn(`[Resy] Warm-up failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // ─── Core Types ──────────────────────────────────────────────────────────────
 
 export interface ResySlot {

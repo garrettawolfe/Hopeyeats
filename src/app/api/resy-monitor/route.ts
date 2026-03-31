@@ -9,6 +9,7 @@ import {
   getPollDiagnostics,
   isQuietHours,
   getRecommendedInterval,
+  warmUpImperva,
 } from "@/lib/resyApi";
 import {
   createMonitorState,
@@ -174,6 +175,9 @@ export async function POST(request: Request) {
       // Reset error state and diagnostics at start of each poll
       resetConsecutiveErrors();
       resetPollDiagnostics();
+
+      // Warm up Imperva cookies before API calls (GET resy.com → fresh WAF cookies)
+      await warmUpImperva();
 
       // Process in batches of 2 restaurants at a time (gentler on Resy API)
       const BATCH_SIZE = quiet ? 1 : 2;

@@ -8,7 +8,7 @@
  * 4. Book via POST /3/book
  */
 
-import { getCookieHeader } from "@/lib/resyApi";
+import { getCookieHeader, warmUpImperva } from "@/lib/resyApi";
 
 const RESY_API_BASE = "https://api.resy.com";
 const RESY_API_KEY = "VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5";
@@ -106,6 +106,12 @@ export async function setAuthFromToken(
 
 // ─── Headers ────────────────────────────────────────────────────────────────
 
+const BOOKING_USER_AGENTS = [
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+];
+
 function buildAuthHeaders(authToken: string, forBooking = false): Record<string, string> {
   const origin = forBooking ? "https://widgets.resy.com" : "https://resy.com";
   const cookieHeaderValue = getCookieHeader();
@@ -120,6 +126,12 @@ function buildAuthHeaders(authToken: string, forBooking = false): Record<string,
     Referer: `${origin}/`,
     "X-Origin": origin,
     "Cache-Control": "no-cache",
+    "User-Agent": BOOKING_USER_AGENTS[Math.floor(Math.random() * BOOKING_USER_AGENTS.length)],
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": forBooking ? "same-site" : "same-site",
   };
   if (cookieHeaderValue) {
     headers["Cookie"] = cookieHeaderValue;
@@ -239,18 +251,23 @@ export async function getSlotDetails(
   try {
     console.log(`[ResyBook] Details request: config_id=${configId.slice(0, 100)} day=${date} party=${partySize}`);
 
-    // Use JSON body (matching real Resy client) with widget origin
+    // Warm up Imperva cookies if needed (ensures WAF cookies are fresh)
+    await warmUpImperva();
+
+    // Use form-encoded body matching real Resy widget client
     const headers = buildAuthHeaders(authToken, true);
-    headers["Content-Type"] = "application/json";
+    // Content-Type is already application/x-www-form-urlencoded from buildAuthHeaders
+
+    const formBody = new URLSearchParams({
+      config_id: configId,
+      day: date,
+      party_size: String(partySize),
+    });
 
     const response = await fetch(`${RESY_API_BASE}/3/details`, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        config_id: configId,
-        day: date,
-        party_size: partySize,
-      }),
+      body: formBody.toString(),
     });
 
     if (!response.ok) {
