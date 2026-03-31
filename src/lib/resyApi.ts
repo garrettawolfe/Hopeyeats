@@ -208,6 +208,7 @@ function buildHeaders(authToken?: string): Record<string, string> {
   headers["Sec-Fetch-Dest"] = "empty";
   headers["Sec-Fetch-Mode"] = "cors";
   headers["Sec-Fetch-Site"] = "same-site";
+  headers["X-Origin"] = "https://resy.com";
 
   return headers;
 }
@@ -237,21 +238,25 @@ export async function findAvailability(
     await new Promise((resolve) => setTimeout(resolve, minGap - timeSinceLast));
   }
 
-  const params = new URLSearchParams({
-    venue_id: venueId.toString(),
+  const url = `${RESY_API_BASE}/4/find`;
+  const body = JSON.stringify({
+    venue_id: venueId,
     day: date,
-    party_size: partySize.toString(),
-    lat: "0",
-    long: "0",
+    party_size: partySize,
+    lat: 0,
+    long: 0,
   });
 
-  const url = `${RESY_API_BASE}/4/find?${params}`;
   rateLimitState.lastRequestAt = Date.now();
   rateLimitState.totalRequests++;
 
+  const headers = buildHeaders(authToken);
+  headers["Content-Type"] = "application/json";
+
   const response = await fetch(url, {
-    method: "GET",
-    headers: buildHeaders(authToken),
+    method: "POST",
+    headers,
+    body,
   });
 
   // Resy returns 500 for dates with no availability — this is NORMAL, not an error.

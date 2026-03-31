@@ -150,7 +150,7 @@ export async function POST(request: Request) {
     const processAsync = async () => {
       const diffs: SerializableSlotDiff[] = [];
       const pollStart = Date.now();
-      const TIME_BUDGET_MS = 55_000;
+      const TIME_BUDGET_MS = 100_000;
       let processedCount = 0;
 
       // Reset error state at start of each poll

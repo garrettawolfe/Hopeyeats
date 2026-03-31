@@ -525,7 +525,7 @@ export const restaurants: Restaurant[] = [
     reservationEmail: null,
     contactEmail: null,
     resyUrl: "https://resy.com/cities/new-york-ny/venues/the-mulberry",
-    resyVenueId: null,
+    resyVenueId: 94548,
     website: "https://www.themulberrybar.com",
     advanceDays: 7,
     bookingTime: null,
