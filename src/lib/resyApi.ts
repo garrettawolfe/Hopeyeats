@@ -100,6 +100,9 @@ interface RateLimitState {
   totalRequests: number;
   total429s: number;
   lastRequestAt: number;
+  pollRequestCount: number; // resets each poll for diagnostic logging
+  pollFirst200: boolean; // track if we've seen any 200 this poll
+  pollFirst500Body: string | null; // store first 500 body this poll
 }
 
 const rateLimitState: RateLimitState = {
@@ -108,6 +111,9 @@ const rateLimitState: RateLimitState = {
   totalRequests: 0,
   total429s: 0,
   lastRequestAt: 0,
+  pollRequestCount: 0,
+  pollFirst200: false,
+  pollFirst500Body: null,
 };
 
 function isBackedOff(): boolean {
@@ -132,6 +138,18 @@ export function getRateLimitStats() {
 /** Reset consecutive errors at the start of each poll. */
 export function resetConsecutiveErrors(): void {
   rateLimitState.consecutiveErrors = 0;
+}
+
+/** Reset per-poll diagnostics at the start of each poll cycle. */
+export function resetPollDiagnostics(): void {
+  rateLimitState.pollRequestCount = 0;
+  rateLimitState.pollFirst200 = false;
+  rateLimitState.pollFirst500Body = null;
+}
+
+/** Get poll diagnostic summary for logging. */
+export function getPollDiagnostics(): string {
+  return `requests=${rateLimitState.pollRequestCount}, any200=${rateLimitState.pollFirst200}, first500Body=${rateLimitState.pollFirst500Body ? `"${rateLimitState.pollFirst500Body}"` : "null"}, total429s=${rateLimitState.total429s}`;
 }
 
 // ─── Core Types ──────────────────────────────────────────────────────────────
@@ -249,6 +267,7 @@ export async function findAvailability(
 
   rateLimitState.lastRequestAt = Date.now();
   rateLimitState.totalRequests++;
+  rateLimitState.pollRequestCount++;
 
   const headers = buildHeaders(authToken);
   headers["Content-Type"] = "application/json";
@@ -259,13 +278,22 @@ export async function findAvailability(
     body,
   });
 
-  // Resy returns 500 for dates with no availability — this is NORMAL, not an error.
-  // Don't count these toward consecutive errors (only 429s and other failures count).
+  // Log first 2 requests per poll to diagnose issues
+  if (rateLimitState.pollRequestCount <= 2) {
+    const respHeaders = Object.fromEntries(response.headers.entries());
+    console.log(`[Resy] /4/find ${response.status} venue=${venueId} date=${date} respHeaders=${JSON.stringify({
+      "content-type": respHeaders["content-type"],
+      "x-cdn": respHeaders["x-cdn"],
+      server: respHeaders["server"],
+    })}`);
+  }
+
   if (response.status === 500) {
-    // Log first few 500 bodies per poll to diagnose blocked IPs vs no availability
-    if (rateLimitState.totalRequests <= 3) {
-      const body = await response.text().catch(() => "");
-      console.log(`[Resy] /4/find 500 for venue ${venueId} on ${date}: ${body.slice(0, 200)}`);
+    // Capture the first 500 body per poll for diagnostics
+    if (rateLimitState.pollFirst500Body === null) {
+      const respBody = await response.text().catch(() => "");
+      rateLimitState.pollFirst500Body = respBody.slice(0, 500);
+      console.log(`[Resy] First 500 body this poll (venue=${venueId}, date=${date}): "${rateLimitState.pollFirst500Body}"`);
     }
     return null;
   }
@@ -281,11 +309,18 @@ export async function findAvailability(
 
   if (!response.ok) {
     rateLimitState.consecutiveErrors++;
+    const text = await response.text().catch(() => "");
+    console.log(`[Resy] /4/find ${response.status} venue=${venueId}: ${text.slice(0, 200)}`);
     return null;
   }
 
   rateLimitState.consecutiveErrors = 0;
+  rateLimitState.pollFirst200 = true;
   const data: ResyFindResponse = await response.json();
+  const slotCount = data.results?.venues?.[0]?.slots?.length ?? 0;
+  if (slotCount > 0) {
+    console.log(`[Resy] Found ${slotCount} slots for venue ${venueId} on ${date}`);
+  }
   return data;
 }
 

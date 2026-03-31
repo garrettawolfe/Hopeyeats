@@ -5,6 +5,8 @@ import {
   resolveVenueId,
   getRateLimitStats,
   resetConsecutiveErrors,
+  resetPollDiagnostics,
+  getPollDiagnostics,
   isQuietHours,
   getRecommendedInterval,
 } from "@/lib/resyApi";
@@ -153,8 +155,9 @@ export async function POST(request: Request) {
       const TIME_BUDGET_MS = 100_000;
       let processedCount = 0;
 
-      // Reset error state at start of each poll
+      // Reset error state and diagnostics at start of each poll
       resetConsecutiveErrors();
+      resetPollDiagnostics();
 
       // Process in batches of 2 restaurants at a time (gentler on Resy API)
       const BATCH_SIZE = quiet ? 1 : 2;
@@ -258,7 +261,8 @@ export async function POST(request: Request) {
       const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
       const rlStats = getRateLimitStats();
       const rlSuffix = rlStats.consecutiveErrors > 0 ? ` | errors=${rlStats.consecutiveErrors}` : "";
-      console.log(`[Poll #${monitorState.pollCount}] Done ${elapsed}s | ${totalSlots} slots | ${totalNew} new${rlSuffix}`);
+      const diag = getPollDiagnostics();
+      console.log(`[Poll #${monitorState.pollCount}] Done ${elapsed}s | ${totalSlots} slots | ${totalNew} new${rlSuffix} | ${diag}`);
 
       // Notifications
       let notifyResult: { sent: string[]; failed: string[] } | undefined;
@@ -280,6 +284,7 @@ export async function POST(request: Request) {
         isBaseline,
         summary: formatPollSummary(diffs, isBaseline),
         rateLimitStats: getRateLimitStats(),
+        diagnostics: diag,
         notificationsSent: notifyResult?.sent,
         notificationsFailed: notifyResult?.failed,
       };

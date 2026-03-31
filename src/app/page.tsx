@@ -357,6 +357,9 @@ function HomeInner() {
               const totalNew = result.diffs.reduce((s, d) => s + d.newSlots.length, 0);
               const withSlots = result.diffs.filter((d) => (d.currentSlots?.length ?? 0) > 0).map((d) => d.restaurant.name);
               addLog(`Poll done — ${result.diffs.length} checked, ${totalSlots} slots, ${totalNew} new. baseline=${result.isBaseline}${withSlots.length > 0 ? `. Avail: ${withSlots.join(", ")}` : ""}`);
+              if (result.diagnostics) {
+                addLog(`Diagnostics: ${result.diagnostics}`);
+              }
 
               if (result.isBaseline) {
                 setNewSlotIds(new Set());
