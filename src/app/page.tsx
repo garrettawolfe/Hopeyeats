@@ -19,7 +19,7 @@ import SettingsDrawer, {
 } from "@/components/SettingsDrawer";
 import RestaurantMonitorCard from "@/components/RestaurantMonitorCard";
 import LoginPage from "@/components/LoginPage";
-import SnipePanel from "@/components/SnipePanel";
+import SnipePanel, { type SnipeWatchTarget } from "@/components/SnipePanel";
 import { ToastProvider, useToast } from "@/components/Toast";
 
 const resyRestaurants = restaurants.filter(
@@ -130,6 +130,9 @@ function HomeInner() {
   const [activePartySize, setActivePartySize] = useState<2 | 4>(4);
   const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
   const [appMode, setAppMode] = useState<"monitor" | "snipe">("monitor");
+  const [snipeWatchTargets, setSnipeWatchTargets] = useState<SnipeWatchTarget[]>([]);
+  const snipeWatchTargetsRef = useRef(snipeWatchTargets);
+  snipeWatchTargetsRef.current = snipeWatchTargets;
   const [debugLog, setDebugLog] = useState<string[]>([]);
   const [showDebugLog, setShowDebugLog] = useState(false);
 
@@ -286,11 +289,19 @@ function HomeInner() {
         blackoutDates: currentSettings.blackoutDates,
       } : undefined;
 
+      // Include snipe watch targets so the monitor can auto-book cancellation slots
+      const activeSnipeTargets = snipeWatchTargetsRef.current;
+      // Ensure snipe-targeted restaurants are included in this poll
+      const snipeRestaurantIds = activeSnipeTargets.map(t => t.restaurantId).filter(id => !restaurantIds.includes(id));
+      const allRestaurantIds = [...restaurantIds, ...snipeRestaurantIds];
+      // Snipe targets get their own date limits (need all dates checked)
+      for (const id of snipeRestaurantIds) dateLimits[id] = 7;
+
       const res = await fetch("/api/resy-monitor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          restaurantIds,
+          restaurantIds: allRestaurantIds,
           dateLimits,
           partySize: currentSettings?.partySize ?? 2,
           resolveIds: true,
@@ -299,6 +310,8 @@ function HomeInner() {
           // Inline auto-book config (Option C — booking happens server-side in same instance)
           autoBookIds: tier1.length > 0 && currentAuth?.authenticated ? tier1 : undefined,
           timeFilters,
+          // Snipe watch targets for cancellation monitoring
+          snipeWatchTargets: activeSnipeTargets.length > 0 ? activeSnipeTargets : undefined,
         }),
         signal: controller.signal,
       });
@@ -395,9 +408,12 @@ function HomeInner() {
                             timestamp: new Date().toISOString(),
                           };
                           setBookingLog((prev) => [log, ...prev].slice(0, 50));
-                          addLog(`[ServerBook] ${event.restaurant} ${event.date} ${event.time}: ${event.success ? "SUCCESS" : `FAILED — ${event.error}`}`);
+                          const isSnipeWatch = event.source === "snipe-watch";
+                          const prefix = isSnipeWatch ? "[SnipeWatch]" : "[ServerBook]";
+                          addLog(`${prefix} ${event.restaurant} ${event.date} ${event.time}: ${event.success ? "SUCCESS" : `FAILED — ${event.error}`}`);
                           if (event.success) {
-                            addToast(`Auto-booked ${event.restaurant} — ${event.date} at ${event.time}`, "success", 8000);
+                            const label = isSnipeWatch ? "Cancellation sniped" : "Auto-booked";
+                            addToast(`${label} ${event.restaurant} — ${event.date} at ${event.time}`, "success", 8000);
                           } else {
                             addToast(`Auto-book failed: ${event.restaurant} — ${event.error ?? "unknown error"}`, "error", 5000);
                           }
@@ -963,6 +979,7 @@ function HomeInner() {
               isAuthenticated={resyAuth?.authenticated ?? false}
               authToken={resyAuth?.authToken}
               partySize={settings.partySize ?? 2}
+              onWatchTargetsChange={setSnipeWatchTargets}
               onBooked={(event) => {
                 addToast(`Sniped! ${event.restaurant} at ${event.time} on ${event.date}`, "success", 10000);
                 setBookingLog((prev) => [{

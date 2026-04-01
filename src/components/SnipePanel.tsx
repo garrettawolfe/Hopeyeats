@@ -24,12 +24,21 @@ interface ScheduledSnipe {
   qstashScheduled?: boolean;
 }
 
+export interface SnipeWatchTarget {
+  restaurantId: string;
+  restaurantName: string;
+  dates: string[];
+  preferredTimes: string[];
+  timeRadius: number;
+}
+
 interface Props {
   restaurants: Restaurant[];
   isAuthenticated: boolean;
   authToken?: string;
   partySize: number;
   onBooked?: (event: SnipeEvent) => void;
+  onWatchTargetsChange?: (targets: SnipeWatchTarget[]) => void;
 }
 
 const TIME_OPTIONS = [
@@ -38,7 +47,7 @@ const TIME_OPTIONS = [
 ];
 
 const DROP_TIME_OPTIONS = [
-  "08:00", "09:00", "10:00", "11:00", "12:00",
+  "08:00", "08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00",
 ];
 
 function formatTime12(t: string): string {
@@ -61,7 +70,7 @@ function getDropDate(restaurant: Restaurant): string | null {
 
 // Server-side scheduling via Upstash Redis + QStash
 
-export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, onBooked }: Props) {
+export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, onBooked, onWatchTargetsChange }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [snipePartySize, setSnipePartySize] = useState(defaultPartySize);
   const [dates, setDates] = useState<string[]>(() => {
@@ -102,14 +111,64 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     return () => clearInterval(timer);
   }, [fetchScheduledSnipes]);
 
+  // Emit watch targets to parent whenever selection/dates/times change
+  // so the monitor can watch for cancellation slots matching snipe criteria
+  useEffect(() => {
+    if (!onWatchTargetsChange || selectedIds.size === 0 || dates.length === 0 || selectedTimes.size === 0) {
+      onWatchTargetsChange?.([]);
+      return;
+    }
+    const targets: SnipeWatchTarget[] = Array.from(selectedIds).map(id => {
+      const r = restaurants.find(x => x.id === id);
+      return {
+        restaurantId: id,
+        restaurantName: r?.name ?? id,
+        dates: [...dates],
+        preferredTimes: Array.from(selectedTimes).sort(),
+        timeRadius,
+      };
+    });
+    onWatchTargetsChange(targets);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIds.size, dates.length, selectedTimes.size, timeRadius]);
+
   const toggleRestaurant = (id: string) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+
+      // Auto-fill drop dates and times when adding restaurants
+      if (next.has(id)) {
+        const r = restaurants.find(x => x.id === id);
+        if (r) {
+          // Auto-add drop date if restaurant has advanceDays
+          const dropDate = getDropDate(r);
+          if (dropDate && !dates.includes(dropDate)) {
+            setDates(prev => [...prev, dropDate].sort());
+          }
+          // Auto-set drop time from restaurant's bookingTime
+          if (r.bookingTime) {
+            const parsed = parseBookingTime(r.bookingTime);
+            if (parsed) setScheduleDropTime(parsed);
+          }
+        }
+      }
       return next;
     });
   };
+
+  /** Parse "9:00 AM ET" → "09:00" */
+  function parseBookingTime(bt: string): string | null {
+    const match = bt.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+    if (!match) return null;
+    let h = parseInt(match[1]);
+    const m = match[2];
+    const ampm = match[3].toUpperCase();
+    if (ampm === "PM" && h < 12) h += 12;
+    if (ampm === "AM" && h === 12) h = 0;
+    return `${String(h).padStart(2, "0")}:${m}`;
+  }
 
   const toggleTime = (t: string) => {
     setSelectedTimes(prev => {
@@ -336,16 +395,66 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           </div>
         </div>
 
-        {/* Restaurant Selection */}
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <label className="text-xs text-stone-500 font-medium">Target Restaurants ({selectedIds.size})</label>
-            <div className="flex gap-2">
-              <button onClick={selectAllRestaurants} disabled={isRunning} className="text-[10px] text-stone-400 hover:text-stone-600 underline">All</button>
-              <button onClick={clearAllRestaurants} disabled={isRunning} className="text-[10px] text-stone-400 hover:text-stone-600 underline">Clear</button>
-            </div>
+        {/* Cancellation Watch Status */}
+        {selectedIds.size > 0 && dates.length > 0 && selectedTimes.size > 0 && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            <span className="text-xs text-emerald-700">
+              <span className="font-medium">Cancellation watch active</span> — monitor is watching {selectedIds.size} restaurant{selectedIds.size !== 1 ? "s" : ""} for cancellation slots on {dates.length} date{dates.length !== 1 ? "s" : ""}
+            </span>
           </div>
-          <div className="max-h-40 overflow-y-auto border border-stone-200 rounded-lg p-2 space-y-0.5">
+        )}
+
+        {/* Quick Drop Snipe Setup */}
+        <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-3">
+          <h3 className="text-xs font-semibold text-amber-800 mb-2">Quick Drop Snipe</h3>
+          <p className="text-[10px] text-amber-600 mb-2">Click a restaurant to auto-setup a snipe for its next reservation drop.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-48 overflow-y-auto">
+            {resyRestaurants.filter(r => r.bookingTime && r.advanceDays).map(r => {
+              const dropDate = getDropDate(r);
+              const isSelected = selectedIds.has(r.id);
+              return (
+                <button
+                  key={r.id}
+                  onClick={() => {
+                    if (!isSelected) {
+                      // One-click setup: select restaurant, add drop date, set drop time
+                      setSelectedIds(prev => new Set([...prev, r.id]));
+                      if (dropDate && !dates.includes(dropDate)) {
+                        setDates(prev => [...prev, dropDate].sort());
+                      }
+                      const parsed = parseBookingTime(r.bookingTime!);
+                      if (parsed) setScheduleDropTime(parsed);
+                    } else {
+                      setSelectedIds(prev => { const next = new Set(prev); next.delete(r.id); return next; });
+                    }
+                  }}
+                  disabled={isRunning}
+                  className={`text-left px-2.5 py-2 rounded-lg text-xs transition-colors ${
+                    isSelected ? "bg-amber-200 text-amber-900 font-medium" : "bg-white/70 text-stone-600 hover:bg-white"
+                  }`}
+                >
+                  <div className="font-medium truncate">{r.name}</div>
+                  <div className="text-[10px] opacity-70">
+                    {r.bookingTime} &middot; {r.advanceDays}d
+                    {dropDate && ` &middot; ${formatDateShort(dropDate)}`}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Restaurant Selection (manual) */}
+        <details className="group">
+          <summary className="flex items-center justify-between cursor-pointer text-xs text-stone-500 font-medium py-1">
+            <span>All Restaurants ({selectedIds.size} selected)</span>
+            <div className="flex gap-2">
+              <button onClick={(e) => { e.preventDefault(); selectAllRestaurants(); }} disabled={isRunning} className="text-[10px] text-stone-400 hover:text-stone-600 underline">All</button>
+              <button onClick={(e) => { e.preventDefault(); clearAllRestaurants(); }} disabled={isRunning} className="text-[10px] text-stone-400 hover:text-stone-600 underline">Clear</button>
+            </div>
+          </summary>
+          <div className="max-h-40 overflow-y-auto border border-stone-200 rounded-lg p-2 space-y-0.5 mt-1">
             {resyRestaurants.map(r => (
               <label
                 key={r.id}
@@ -367,7 +476,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               </label>
             ))}
           </div>
-        </div>
+        </details>
 
         {/* Drop Time Info (when restaurants are selected) */}
         {dropInfoItems.length > 0 && (

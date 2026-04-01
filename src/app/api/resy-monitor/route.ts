@@ -61,6 +61,7 @@ export async function POST(request: Request) {
       paymentMethodId,
       timeFilters,
       dateLimits,
+      snipeWatchTargets,
     } = body as {
       restaurantIds?: string[];
       partySize?: number;
@@ -73,6 +74,7 @@ export async function POST(request: Request) {
       paymentMethodId?: number;
       timeFilters?: { preferredDays?: string[]; dayTimeWindows?: Record<string, { start?: string; end?: string }>; blackoutDates?: Array<{ date: string }> };
       dateLimits?: Record<string, number>;
+      snipeWatchTargets?: Array<{ restaurantId: string; restaurantName: string; dates: string[]; preferredTimes: string[]; timeRadius: number }>;
     };
 
     if (notifications) notificationConfig = notifications;
@@ -371,6 +373,83 @@ export async function POST(request: Request) {
                   time: slot.time,
                   success: false,
                   error: result.error,
+                });
+              }
+            }
+          }
+        }
+
+        // Snipe watch targets: auto-book cancellation slots matching snipe criteria
+        if (snipeWatchTargets && snipeWatchTargets.length > 0 && auth?.authToken && effectivePaymentId != null) {
+          for (const serialized of batchResults) {
+            const target = snipeWatchTargets.find(t => t.restaurantId === serialized.restaurant.id);
+            if (!target) continue;
+            // Skip if already handled by regular auto-book above
+            if (autoBookIds?.includes(serialized.restaurant.id)) continue;
+
+            // Only consider new slots (cancellations) or all slots on baseline
+            const candidates = isBaseline ? (serialized.currentSlots ?? []) : serialized.newSlots;
+            if (candidates.length === 0) continue;
+
+            // Filter to snipe target's specific dates and time preferences
+            const matching = candidates.filter(slot => {
+              // Must match one of the snipe target dates
+              if (!target.dates.includes(slot.date)) return false;
+              // Must match preferred times within radius
+              if (target.preferredTimes.length === 0) return true;
+              const slotMinutes = parseInt(slot.time.split(":")[0]) * 60 + parseInt(slot.time.split(":")[1]);
+              for (const pt of target.preferredTimes) {
+                const [ph, pm] = pt.split(":").map(Number);
+                const prefMinutes = ph * 60 + pm;
+                if (Math.abs(slotMinutes - prefMinutes) <= target.timeRadius) return true;
+              }
+              return false;
+            });
+
+            if (matching.length === 0) continue;
+
+            // Conflict check
+            let existing: Awaited<ReturnType<typeof fetchExistingReservations>> = [];
+            try {
+              existing = await fetchExistingReservations(auth.authToken);
+            } catch { /* continue */ }
+            const nonConflicting = matching.filter(slot => !hasTimeConflict(existing, slot.date, slot.time));
+            if (nonConflicting.length === 0) continue;
+
+            console.log(`[SnipeWatch] ${serialized.restaurant.name}: ${nonConflicting.length} cancellation slots match snipe criteria`);
+
+            const slotsForDetails = nonConflicting.slice(0, 3).map(s => ({ configToken: s.configToken, date: s.date, time: s.time }));
+            const parallelResult = await getSlotDetailsParallel(auth.authToken, slotsForDetails, partySize);
+
+            if ("errors" in parallelResult) {
+              console.log(`[SnipeWatch] ${serialized.restaurant.name}: all slot details failed`);
+            } else {
+              const { slot, details } = parallelResult;
+              const result = await bookReservation(auth.authToken, details.bookToken, effectivePaymentId);
+              if (result.success) {
+                console.log(`[SnipeWatch] BOOKED ${serialized.restaurant.name} ${slot.date} ${slot.time} (cancellation snipe)`);
+                invalidateReservationCache();
+                await write({
+                  type: "booking",
+                  restaurant: serialized.restaurant.name,
+                  restaurantId: serialized.restaurant.id,
+                  date: slot.date,
+                  time: slot.time,
+                  success: true,
+                  reservationId: result.reservationId,
+                  source: "snipe-watch",
+                });
+              } else {
+                console.log(`[SnipeWatch] Failed ${serialized.restaurant.name} ${slot.date} ${slot.time}: ${result.error}`);
+                await write({
+                  type: "booking",
+                  restaurant: serialized.restaurant.name,
+                  restaurantId: serialized.restaurant.id,
+                  date: slot.date,
+                  time: slot.time,
+                  success: false,
+                  error: result.error,
+                  source: "snipe-watch",
                 });
               }
             }
