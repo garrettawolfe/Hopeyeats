@@ -1,19 +1,23 @@
 import { NextResponse } from "next/server";
-import { autoBook, autoBookWithRetry, getCachedAuth, setAuthFromToken } from "@/lib/resyBooking";
+import { autoBook, autoBookWithRetry, getCachedAuth, setAuthFromToken, fetchExistingReservations, hasTimeConflict } from "@/lib/resyBooking";
 
 /**
  * POST /api/resy-book
  * Auto-book a specific slot.
  *
- * Body: { configToken, date, partySize, restaurantName, time, authToken? }
+ * Body: { configToken, date, partySize, restaurantName, time, authToken?, skipConflictCheck? }
  *   OR: { slots: [{configToken, date, time}], partySize, restaurantName, authToken? } for slot pool retry
  *
  * Auth: Uses cached auth if available, otherwise validates authToken from body.
+ *
+ * If a meal-period conflict exists (e.g., already have dinner that night),
+ * returns 409 with { conflict: true, existingVenue, existingTime } unless
+ * skipConflictCheck is true.
  */
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { configToken, date, partySize, restaurantName, time, slots, authToken } = body;
+    const { configToken, date, partySize, restaurantName, time, slots, authToken, skipConflictCheck } = body;
 
     // Try cached auth first; if unavailable, validate the token from request body
     let auth = getCachedAuth();
@@ -59,12 +63,34 @@ export async function POST(request: Request) {
       return NextResponse.json(result);
     }
 
-    // Single slot mode (backwards compatible)
+    // Single slot mode
     if (!configToken || !date) {
       return NextResponse.json(
         { error: "configToken and date are required" },
         { status: 400 },
       );
+    }
+
+    // Meal-period conflict check (can be overridden by user confirmation)
+    if (!skipConflictCheck && time) {
+      try {
+        const existing = await fetchExistingReservations(auth.authToken);
+        const conflicting = findMealConflict(existing, date, time);
+        if (conflicting) {
+          return NextResponse.json(
+            {
+              conflict: true,
+              existingVenue: conflicting.venue,
+              existingTime: conflicting.time,
+              existingDate: conflicting.date,
+              error: `You already have a dinner reservation at ${conflicting.venue} on ${conflicting.date}`,
+            },
+            { status: 409 },
+          );
+        }
+      } catch {
+        // Continue without conflict check if fetch fails
+      }
     }
 
     const result = await autoBook(
@@ -92,4 +118,27 @@ export async function POST(request: Request) {
       { status: 500 },
     );
   }
+}
+
+/**
+ * Find the first existing reservation that conflicts by meal period.
+ * Returns the conflicting reservation or null.
+ */
+function findMealConflict(
+  existing: Array<{ venue: string; date: string; time: string }>,
+  date: string,
+  time: string,
+): { venue: string; date: string; time: string } | null {
+  const getMeal = (t: string) => {
+    const [h] = t.split(":").map(Number);
+    if (h < 11) return "breakfast";
+    if (h < 16) return "lunch";
+    return "dinner";
+  };
+  const proposedMeal = getMeal(time);
+  for (const res of existing) {
+    if (res.date !== date || !res.time) continue;
+    if (getMeal(res.time) === proposedMeal) return res;
+  }
+  return null;
 }

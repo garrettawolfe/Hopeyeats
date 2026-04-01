@@ -462,7 +462,7 @@ function HomeInner() {
 
   // --- Handlers ---
 
-  const handleBook = async (slot: AvailabilitySlot) => {
+  const handleBook = async (slot: AvailabilitySlot, skipConflictCheck = false) => {
     setBookingInProgress(slot.id);
     try {
       const res = await fetch("/api/resy-book", {
@@ -475,9 +475,24 @@ function HomeInner() {
           restaurantName: slot.venueName,
           time: slot.time,
           authToken: resyAuth?.authToken,
+          skipConflictCheck,
         }),
       });
       const data = await res.json();
+
+      // Meal-period conflict — ask user to confirm override
+      if (res.status === 409 && data.conflict) {
+        setBookingInProgress(null);
+        const dayLabel = new Date(data.existingDate + "T12:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+        const confirmed = window.confirm(
+          `You already have a reservation at ${data.existingVenue} on ${dayLabel}.\n\nBook ${slot.venueName} instead?`
+        );
+        if (confirmed) {
+          handleBook(slot, true);
+        }
+        return;
+      }
+
       const log: BookingLog = {
         id: slot.id, restaurantName: slot.venueName, date: slot.date, time: slot.time,
         partySize: settings?.partySize ?? 2, status: data.success ? "success" : "failed",
