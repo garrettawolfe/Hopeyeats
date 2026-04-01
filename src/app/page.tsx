@@ -262,7 +262,7 @@ function HomeInner() {
     const restaurantIds = [...tier1, ...tier2];
     const dateLimits: Record<string, number> = {};
     for (const id of tier1) dateLimits[id] = 3;
-    for (const id of tier2) dateLimits[id] = 2;
+    for (const id of tier2) dateLimits[id] = 3;
 
     addLog(`Poll #${cycle} — ${tier1.length} priority + ${tier2.length} monitor = ${restaurantIds.length} restaurants`);
 

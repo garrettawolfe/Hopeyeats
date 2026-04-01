@@ -217,9 +217,25 @@ export async function POST(request: Request) {
         const batchResults = await Promise.all(
           batch.map(async (restaurant) => {
             const maxDates = dateLimits?.[restaurant.id] ?? 3;
-            const lookAhead = daysAhead ?? Math.min(restaurant.advanceDays, maxDates <= 2 ? 7 : 14);
+            const lookAhead = daysAhead ?? Math.min(restaurant.advanceDays, 14);
             const effectiveLookAhead = quiet ? Math.min(lookAhead, 7) : lookAhead;
-            const dates = getForwardDates(effectiveLookAhead);
+            let dates = getForwardDates(effectiveLookAhead);
+
+            // Filter to preferred days if set — avoids wasting API calls on
+            // dates the user doesn't care about (e.g., checking Tue/Wed when
+            // user only wants Thu/Fri/Sat)
+            const prefDays = timeFilters?.preferredDays;
+            if (prefDays && prefDays.length > 0) {
+              const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+              const prefSet = new Set(prefDays);
+              dates = dates.filter(d => {
+                const dow = new Date(d + "T12:00:00").getDay();
+                return prefSet.has(dayNames[dow]);
+              });
+            }
+
+            // Limit to maxDates after filtering
+            dates = dates.slice(0, maxDates);
 
             const slots = await checkVenueAvailability(
               restaurant.resyVenueId,
