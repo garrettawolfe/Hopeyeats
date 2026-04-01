@@ -71,7 +71,7 @@ export async function POST(request: Request) {
       authToken?: string;
       autoBookIds?: string[];
       paymentMethodId?: number;
-      timeFilters?: { preferredDays?: string[]; dayTimeWindows?: Record<string, { earliest?: string; latest?: string }>; blackoutDates?: Array<{ date: string }> };
+      timeFilters?: { preferredDays?: string[]; dayTimeWindows?: Record<string, { start?: string; end?: string }>; blackoutDates?: Array<{ date: string }> };
       dateLimits?: Record<string, number>;
     };
 
@@ -157,7 +157,8 @@ export async function POST(request: Request) {
     const pollTargets = monitored;
 
     const pollNum = monitorState.pollCount + 1;
-    console.log(`[Poll #${pollNum}] ${pollTargets.length}/${monitored.length} restaurants | party=${partySize} | auth=${!!auth?.authToken}`);
+    const autoBookReady = !!(autoBookIds && autoBookIds.length > 0 && auth?.authToken && (paymentMethodId ?? (auth as { paymentMethodId?: number | null })?.paymentMethodId) != null);
+    console.log(`[Poll #${pollNum}] ${pollTargets.length}/${monitored.length} restaurants | party=${partySize} | auth=${!!auth?.authToken} | autoBook=${autoBookReady}(ids=${autoBookIds?.length ?? 0},pay=${paymentMethodId ?? (auth as { paymentMethodId?: number | null })?.paymentMethodId ?? "none"})`);
 
     // Stream response
     const encoder = new TextEncoder();
@@ -270,7 +271,7 @@ export async function POST(request: Request) {
 
         // Inline auto-book: attempt booking from same serverless instance (shared cookies)
         const effectivePaymentId = paymentMethodId ?? (auth as { paymentMethodId?: number | null })?.paymentMethodId;
-        if (autoBookIds && autoBookIds.length > 0 && auth?.authToken && effectivePaymentId) {
+        if (autoBookIds && autoBookIds.length > 0 && auth?.authToken && effectivePaymentId != null) {
           for (const serialized of batchResults) {
             if (!autoBookIds.includes(serialized.restaurant.id)) continue;
             if (serialized.newSlots.length === 0 && !isBaseline) continue;
@@ -289,8 +290,8 @@ export async function POST(request: Request) {
               if (!preferredDays.includes(dayName)) return false;
               const tw = dayTimeWindows?.[dayName];
               if (tw) {
-                if (tw.earliest && slot.time < tw.earliest) return false;
-                if (tw.latest && slot.time > tw.latest) return false;
+                if (tw.start && slot.time < tw.start) return false;
+                if (tw.end && slot.time > tw.end) return false;
               }
               return true;
             }) : candidates;
