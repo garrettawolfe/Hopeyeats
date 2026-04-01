@@ -392,20 +392,16 @@ export async function bookReservation(
       body: body.toString(),
     });
 
-    if (response.status === 412) {
-      const data = await response.json().catch(() => ({}));
-      const reservationId = data.specs?.reservation_id ?? data.reservation_id;
-      if (reservationId) {
-        return { success: true, reservationId: String(reservationId), resyToken: data.resy_token };
-      }
-    }
-
     if (!response.ok) {
       const text = await response.text().catch(() => "");
+      const statusLabel = response.status === 412 ? "slot already booked or token expired"
+        : response.status === 403 ? "slot unavailable or venue requires deposit"
+        : response.status === 409 ? "booking conflict"
+        : `HTTP ${response.status}`;
       console.error(`[ResyBook] Booking failed: ${response.status} — ${text}`);
       return {
         success: false,
-        error: `Booking failed: ${response.status}. ${text}`,
+        error: `${statusLabel}. ${text}`.trim(),
       };
     }
 
