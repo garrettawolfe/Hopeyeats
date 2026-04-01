@@ -502,8 +502,21 @@ export async function fetchExistingReservations(
 }
 
 /**
+ * Determine the meal period for a given time (HH:MM format).
+ * - Breakfast: before 11:00
+ * - Lunch: 11:00–15:59
+ * - Dinner: 16:00+
+ */
+function getMealPeriod(time: string): "breakfast" | "lunch" | "dinner" {
+  const [h] = time.split(":").map(Number);
+  if (h < 11) return "breakfast";
+  if (h < 16) return "lunch";
+  return "dinner";
+}
+
+/**
  * Check if a proposed booking conflicts with an existing reservation.
- * A conflict is: same date AND overlapping time window (within 2 hours).
+ * A conflict is: same date AND same meal period (breakfast/lunch/dinner).
  */
 export function hasTimeConflict(
   existing: ExistingReservation[],
@@ -512,20 +525,17 @@ export function hasTimeConflict(
 ): boolean {
   if (!time) return false;
 
-  const [newH, newM] = time.split(":").map(Number);
-  const newMinutes = newH * 60 + newM;
+  const proposedMeal = getMealPeriod(time);
 
   for (const res of existing) {
     if (res.date !== date) continue;
     if (!res.time) continue;
 
-    const [exH, exM] = res.time.split(":").map(Number);
-    const exMinutes = exH * 60 + exM;
+    const existingMeal = getMealPeriod(res.time);
 
-    // Conflict if within 2 hours of each other
-    if (Math.abs(newMinutes - exMinutes) < 120) {
+    if (proposedMeal === existingMeal) {
       console.log(
-        `[ResyBook] Conflict: existing ${res.venue} at ${res.time} on ${res.date} vs proposed ${time} on ${date}`,
+        `[ResyBook] Meal conflict: existing ${res.venue} ${existingMeal} at ${res.time} on ${res.date} vs proposed ${proposedMeal} at ${time} on ${date}`,
       );
       return true;
     }
