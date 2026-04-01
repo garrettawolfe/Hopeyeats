@@ -26,7 +26,7 @@ import {
   sendNotifications,
   type NotificationConfig,
 } from "@/lib/notifications";
-import { getCachedAuth, setAuthFromToken, getSlotDetails, getSlotDetailsParallel, bookReservation, fetchExistingReservations, hasTimeConflict } from "@/lib/resyBooking";
+import { getCachedAuth, setAuthFromToken, getSlotDetails, getSlotDetailsParallel, bookReservation, fetchExistingReservations, hasTimeConflict, invalidateReservationCache } from "@/lib/resyBooking";
 
 export const maxDuration = 120;
 
@@ -333,6 +333,9 @@ export async function POST(request: Request) {
 
               if (result.success) {
                 console.log(`[AutoBook] BOOKED ${serialized.restaurant.name} ${slot.date} ${slot.time} in ${bookMs}ms`);
+                // Invalidate reservation cache so next restaurant's conflict check
+                // sees this new booking (prevents double-booking same evening)
+                invalidateReservationCache();
                 await write({
                   type: "booking",
                   restaurant: serialized.restaurant.name,

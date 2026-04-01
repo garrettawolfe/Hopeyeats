@@ -1068,7 +1068,13 @@ function HomeInner() {
         open={showSettings}
         onClose={() => setShowSettings(false)}
         settings={settings}
-        onSettingsChange={(s) => { setSettings(s); saveSettings(s); }}
+        onSettingsChange={(s) => {
+          // Preserve monitoredIds/autoBookIds from React state — SettingsDrawer
+          // doesn't manage these, so its copy may be stale/empty
+          const merged = { ...s, monitoredIds: Array.from(monitoredIds), autoBookIds: Array.from(autoBookIds) };
+          setSettings(merged);
+          saveSettings(merged);
+        }}
         resyAuth={resyAuth}
         onResyLogin={handleResyLogin}
         onResyTokenAuth={handleResyTokenAuth}

@@ -437,6 +437,11 @@ let existingReservations: ExistingReservation[] = [];
 let lastReservationFetch = 0;
 const RESERVATION_CACHE_MS = 5 * 60 * 1000; // 5 minutes
 
+/** Invalidate the reservation cache — call after a successful booking. */
+export function invalidateReservationCache(): void {
+  lastReservationFetch = 0;
+}
+
 /**
  * Fetch the user's upcoming reservations from Resy.
  */
@@ -489,7 +494,9 @@ export async function fetchExistingReservations(
 
     existingReservations = reservations;
     lastReservationFetch = Date.now();
-    console.log(`[ResyBook] Fetched ${reservations.length} existing reservations`);
+    // Log parsed reservations for debugging conflict checks
+    const upcoming = reservations.filter(r => r.date >= new Date().toISOString().split("T")[0]);
+    console.log(`[ResyBook] Fetched ${reservations.length} existing reservations (${upcoming.length} upcoming): ${upcoming.map(r => `${r.venue} ${r.date} ${r.time}`).join(", ")}`);
     return reservations;
   } catch (err) {
     console.error("[ResyBook] Error fetching reservations:", err);
@@ -522,6 +529,10 @@ export function hasTimeConflict(
   if (!time) return false;
 
   const proposedMeal = getMealPeriod(time);
+  const sameDateRes = existing.filter(r => r.date === date);
+  if (sameDateRes.length > 0) {
+    console.log(`[ResyBook] Conflict check: proposed ${date} ${time} (${proposedMeal}) vs ${sameDateRes.length} existing on same date: ${sameDateRes.map(r => `${r.venue} ${r.time}`).join(", ")}`);
+  }
 
   for (const res of existing) {
     if (res.date !== date) continue;
