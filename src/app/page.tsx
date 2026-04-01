@@ -254,8 +254,9 @@ function HomeInner() {
 
     // Smart polling: auto-book restaurants every poll (3 dates), others every 2nd poll (2 dates)
     // Cycle 0 = baseline, always checks everyone. Odd cycles = tier-1 only. Even cycles = everyone.
+    // If no auto-book restaurants, check all monitored every poll.
     const tier1 = Array.from(autoBookIds); // checked every poll
-    const tier2 = (cycle === 0 || cycle % 2 === 0)
+    const tier2 = (tier1.length === 0 || cycle === 0 || cycle % 2 === 0)
       ? Array.from(monitoredIds).filter(id => !autoBookIds.has(id))
       : [];
     const restaurantIds = [...tier1, ...tier2];
