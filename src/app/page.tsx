@@ -252,13 +252,22 @@ function HomeInner() {
     const currentSettings = settingsRef.current;
     const cycle = pollCycleRef.current++;
 
-    // Smart polling: auto-book restaurants every poll (3 dates), others every 2nd poll (2 dates)
-    // Cycle 0 = baseline, always checks everyone. Odd cycles = tier-1 only. Even cycles = everyone.
-    // If no auto-book restaurants, check all monitored every poll.
+    // Smart polling: auto-book restaurants checked every poll, others rotated
+    // Cycle 0 = baseline (all restaurants). Subsequent cycles rotate monitor-only
+    // in groups of ~10 to reduce per-poll request volume (avoids WAF blocking).
     const tier1 = Array.from(autoBookIds); // checked every poll
-    const tier2 = (tier1.length === 0 || cycle === 0 || cycle % 2 === 0)
-      ? Array.from(monitoredIds).filter(id => !autoBookIds.has(id))
-      : [];
+    const allMonitor = Array.from(monitoredIds).filter(id => !autoBookIds.has(id));
+    let tier2: string[];
+    if (cycle === 0) {
+      // Baseline: check everyone
+      tier2 = allMonitor;
+    } else {
+      // Rotate through monitor-only restaurants in groups of ~10
+      const GROUP_SIZE = 10;
+      const numGroups = Math.ceil(allMonitor.length / GROUP_SIZE);
+      const groupIdx = cycle % Math.max(numGroups, 1);
+      tier2 = allMonitor.slice(groupIdx * GROUP_SIZE, (groupIdx + 1) * GROUP_SIZE);
+    }
     const restaurantIds = [...tier1, ...tier2];
     const dateLimits: Record<string, number> = {};
     for (const id of tier1) dateLimits[id] = 3;
@@ -402,6 +411,19 @@ function HomeInner() {
               const totalSlots = result.diffs.reduce((s, d) => s + (d.currentSlots?.length ?? 0), 0);
               const totalNew = result.diffs.reduce((s, d) => s + d.newSlots.length, 0);
               const withSlots = result.diffs.filter((d) => (d.currentSlots?.length ?? 0) > 0).map((d) => d.restaurant.name);
+
+              // Track consecutive all-fail polls for exponential backoff
+              // Parse diagnostics string for 200 status count (format: "statuses={200:N,...}")
+              const had200s = result.diagnostics?.includes("200:") ?? false;
+              if (had200s) {
+                consecutiveFailsRef.current = 0;
+              } else if (result.diffs.length > 0) {
+                consecutiveFailsRef.current++;
+                if (consecutiveFailsRef.current > 1) {
+                  addLog(`WAF blocked — backing off (${consecutiveFailsRef.current} consecutive failures)`);
+                }
+              }
+
               addLog(`Poll done — ${result.diffs.length} checked, ${totalSlots} slots, ${totalNew} new. baseline=${result.isBaseline}${withSlots.length > 0 ? `. Avail: ${withSlots.join(", ")}` : ""}`);
               if (result.diagnostics) {
                 addLog(`Diagnostics: ${result.diagnostics}`);
@@ -449,15 +471,29 @@ function HomeInner() {
 
   // Only start polling when: settings loaded AND Resy auth fully resolved AND authenticated
   const resyAuthenticated = resyAuth?.authenticated === true;
+  const consecutiveFailsRef = useRef(0);
   useEffect(() => {
     if (!settings || !resyAuthenticated) return;
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission();
     }
     poll();
-    const jitter = 60_000 * (1.0 + Math.random() * 0.3);
-    intervalRef.current = setInterval(poll, jitter);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+    // Dynamic interval with exponential backoff after consecutive all-500 polls
+    const scheduleNext = () => {
+      const fails = consecutiveFailsRef.current;
+      const baseInterval = 60_000 * (1.0 + Math.random() * 0.3); // 60-78s
+      const backoffMultiplier = fails > 0 ? Math.min(Math.pow(2, fails), 8) : 1; // 2x, 4x, 8x max
+      const interval = baseInterval * backoffMultiplier;
+      if (fails > 0) {
+        console.log(`[WolfePack] Backing off: ${Math.round(interval / 1000)}s (${fails} consecutive failures)`);
+      }
+      intervalRef.current = setTimeout(() => {
+        poll();
+        scheduleNext();
+      }, interval);
+    };
+    scheduleNext();
+    return () => { if (intervalRef.current) clearTimeout(intervalRef.current); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings !== null, resyAuthenticated]);
 

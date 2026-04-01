@@ -289,12 +289,18 @@ export function getPollDiagnostics(): string {
 // This helps bypass IP-reputation based blocks on datacenter IPs.
 
 let lastWarmUpAt = 0;
-const WARMUP_INTERVAL_MS = 300_000; // 5 min — don't re-warm between polls
+const WARMUP_COOLDOWN_MS = 60_000; // Don't re-warm more than once per 60s
 let lastPollHadSuccess = false; // Track if last poll had any 200s
+let consecutiveWarmUpFailures = 0; // Track when re-warming is futile (IP blocked)
 
 /** Called by monitor route to signal that the last poll had successful API calls. */
 export function markPollSuccess(had200s: boolean): void {
   lastPollHadSuccess = had200s;
+  if (had200s) {
+    consecutiveWarmUpFailures = 0;
+  } else {
+    consecutiveWarmUpFailures++;
+  }
 }
 
 /** #5: Check if cookie jar has the required Imperva cookies for API access. */
@@ -310,15 +316,20 @@ export async function warmUpImperva(): Promise<void> {
 
   // CRITICAL: Don't re-warm if cookies are working.
   // Re-warming clears the cookie jar, and new cookies often don't work.
-  // Only re-warm if: (a) no cookies yet, or (b) last poll was all failures
   if (hasValidCookies()) {
     if (lastPollHadSuccess) {
       // Cookies worked last poll — keep them, don't touch
       return;
     }
-    // Last poll was ALL failures — cookies are stale/blocked by Imperva.
-    // Force re-warm immediately (don't wait for 5min interval).
-    console.log(`[Resy] Warm-up triggered: cookies exist but last poll was all 500s — force refresh`);
+    // After 3+ consecutive failures, re-warming is futile — IP is blocked.
+    // Only re-warm every 60s to avoid wasting requests.
+    if (consecutiveWarmUpFailures >= 3 && now - lastWarmUpAt < WARMUP_COOLDOWN_MS) {
+      return;
+    }
+    if (now - lastWarmUpAt < 5_000) {
+      return; // Don't re-warm within 5s of last warm-up
+    }
+    console.log(`[Resy] Warm-up triggered: cookies exist but last poll was all 500s — force refresh (fail streak: ${consecutiveWarmUpFailures})`);
   } else if (now - lastWarmUpAt < 10_000) {
     // Just warmed up <10s ago and still no valid cookies — don't spam
     return;
