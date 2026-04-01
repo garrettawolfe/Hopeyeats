@@ -310,17 +310,15 @@ export async function warmUpImperva(): Promise<void> {
 
   // CRITICAL: Don't re-warm if cookies are working.
   // Re-warming clears the cookie jar, and new cookies often don't work.
-  // Only re-warm if: (a) no cookies yet, or (b) last poll was all failures, or (c) interval expired
+  // Only re-warm if: (a) no cookies yet, or (b) last poll was all failures
   if (hasValidCookies()) {
     if (lastPollHadSuccess) {
       // Cookies worked last poll — keep them, don't touch
       return;
     }
-    if (now - lastWarmUpAt < WARMUP_INTERVAL_MS) {
-      // Cookies exist but failed — wait for interval before retry
-      return;
-    }
-    console.log(`[Resy] Warm-up triggered: cookies exist but last poll failed — refreshing`);
+    // Last poll was ALL failures — cookies are stale/blocked by Imperva.
+    // Force re-warm immediately (don't wait for 5min interval).
+    console.log(`[Resy] Warm-up triggered: cookies exist but last poll was all 500s — force refresh`);
   } else if (now - lastWarmUpAt < 10_000) {
     // Just warmed up <10s ago and still no valid cookies — don't spam
     return;

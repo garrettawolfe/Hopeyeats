@@ -474,6 +474,7 @@ function HomeInner() {
           partySize: settings?.partySize ?? 2,
           restaurantName: slot.venueName,
           time: slot.time,
+          authToken: resyAuth?.authToken,
         }),
       });
       const data = await res.json();
