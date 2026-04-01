@@ -256,8 +256,8 @@ function HomeInner() {
     const cycle = pollCycleRef.current++;
 
     // Smart polling: auto-book restaurants checked every poll, others rotated
-    // Cycle 0 = baseline (all restaurants). Subsequent cycles rotate monitor-only
-    // in groups of ~10 to reduce per-poll request volume (avoids WAF blocking).
+    // Groups of 8 restaurants × 2 dates each = ~16 API calls per poll
+    // This keeps us well under Imperva's ~96 request threshold
     const tier1 = Array.from(autoBookIds); // checked every poll
     const allMonitor = Array.from(monitoredIds).filter(id => !autoBookIds.has(id));
     let tier2: string[];
@@ -265,16 +265,15 @@ function HomeInner() {
       // Baseline: check everyone
       tier2 = allMonitor;
     } else {
-      // Rotate through monitor-only restaurants in groups of ~10
-      const GROUP_SIZE = 10;
+      const GROUP_SIZE = 8;
       const numGroups = Math.ceil(allMonitor.length / GROUP_SIZE);
       const groupIdx = cycle % Math.max(numGroups, 1);
       tier2 = allMonitor.slice(groupIdx * GROUP_SIZE, (groupIdx + 1) * GROUP_SIZE);
     }
     const restaurantIds = [...tier1, ...tier2];
     const dateLimits: Record<string, number> = {};
-    for (const id of tier1) dateLimits[id] = 3;
-    for (const id of tier2) dateLimits[id] = 3;
+    for (const id of tier1) dateLimits[id] = 3; // priority: 3 dates
+    for (const id of tier2) dateLimits[id] = 2; // monitor: 2 dates (saves API calls)
 
     addLog(`Poll #${cycle} — ${tier1.length} priority + ${tier2.length} monitor = ${restaurantIds.length} restaurants`);
 
@@ -498,7 +497,8 @@ function HomeInner() {
     const scheduleNext = () => {
       const fails = consecutiveFailsRef.current;
       const baseInterval = 60_000 * (1.0 + Math.random() * 0.3); // 60-78s
-      const backoffMultiplier = fails > 0 ? Math.min(Math.pow(2, fails), 8) : 1; // 2x, 4x, 8x max
+      // Backoff: 2x, 4x, 8x, 16x, 32x max (~32 min) — Imperva blocks last 15-60 min
+      const backoffMultiplier = fails > 0 ? Math.min(Math.pow(2, fails), 32) : 1;
       const interval = baseInterval * backoffMultiplier;
       if (fails > 0) {
         console.log(`[WolfePack] Backing off: ${Math.round(interval / 1000)}s (${fails} consecutive failures)`);

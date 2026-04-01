@@ -456,10 +456,13 @@ export async function POST(request: Request) {
           }
         }
 
-        // #4: Gaussian-like jitter between restaurant batches (200-900ms, centered ~500ms)
+        // #4: Jitter between batches — longer delays to reduce WAF triggering
+        // Normal: 500-1500ms, recovering from block: 1000-3000ms
         if (batchStart + BATCH_SIZE < pollTargets.length) {
           const r = (Math.random() + Math.random() + Math.random()) / 3;
-          await delay(200 + r * 700);
+          const baseDelay = consecutiveAllFailBatches > 0 ? 1000 : 500;
+          const jitterRange = consecutiveAllFailBatches > 0 ? 2000 : 1000;
+          await delay(baseDelay + r * jitterRange);
         }
       }
 
