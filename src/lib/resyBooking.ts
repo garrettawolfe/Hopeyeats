@@ -273,6 +273,7 @@ export async function getSlotDetails(
   configId: string,
   date: string,
   partySize: number,
+  paymentMethodId?: number | null,
 ): Promise<SlotDetails | SlotDetailsError> {
   const detailsStart = Date.now(); // #10: Booking attempt timing
   try {
@@ -283,14 +284,20 @@ export async function getSlotDetails(
     const headers = buildAuthHeaders(authToken, true);
     headers["Content-Type"] = "application/json";
 
+    // Include payment method for deposit-required venues (403/1026 without it)
+    const bodyObj: Record<string, unknown> = {
+      config_id: configId,
+      day: date,
+      party_size: partySize,
+    };
+    if (paymentMethodId != null) {
+      bodyObj.struct_payment_method = { id: paymentMethodId };
+    }
+
     const response = await fetch(`${RESY_API_BASE}/3/details`, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        config_id: configId,
-        day: date,
-        party_size: partySize,
-      }),
+      body: JSON.stringify(bodyObj),
     });
 
     const detailsMs = Date.now() - detailsStart;
@@ -339,6 +346,7 @@ export async function getSlotDetailsParallel(
   authToken: string,
   slots: Array<{ configToken: string; date: string; time: string }>,
   partySize: number,
+  paymentMethodId?: number | null,
 ): Promise<{ slot: typeof slots[0]; details: SlotDetails } | { errors: string[] }> {
   const batchStart = Date.now();
   console.log(`[ResyBook] #6 Parallel details fetch: ${slots.length} slots`);
@@ -346,7 +354,7 @@ export async function getSlotDetailsParallel(
   // Fetch all details in parallel
   const results = await Promise.all(
     slots.map(async (slot) => {
-      const details = await getSlotDetails(authToken, slot.configToken, slot.date, partySize);
+      const details = await getSlotDetails(authToken, slot.configToken, slot.date, partySize, paymentMethodId);
       return { slot, details };
     }),
   );
@@ -626,8 +634,8 @@ export async function autoBook(
     };
   }
 
-  // Step 1: Get booking token
-  const details = await getSlotDetails(authToken, configToken, date, partySize);
+  // Step 1: Get booking token (pass paymentMethodId for deposit-required venues like Cote)
+  const details = await getSlotDetails(authToken, configToken, date, partySize, paymentMethodId);
   if ("error" in details) {
     return {
       success: false,
@@ -688,7 +696,7 @@ export async function autoBookWithRetry(
         continue;
       }
 
-      const details = await getSlotDetails(authToken, slot.configToken, slot.date, partySize);
+      const details = await getSlotDetails(authToken, slot.configToken, slot.date, partySize, paymentMethodId);
       if ("error" in details) {
         errors.push(`${slot.date} ${slot.time}: ${details.error}`);
         failedTokens.add(slot.configToken);

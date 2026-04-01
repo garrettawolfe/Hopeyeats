@@ -159,6 +159,7 @@ export async function POST(request: Request) {
                   slot.configToken,
                   date,
                   partySize,
+                  paymentMethodId,
                 );
 
                 if ("error" in details) {

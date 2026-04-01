@@ -328,7 +328,7 @@ export async function POST(request: Request) {
 
             // #6: Fetch slot details in PARALLEL (all at once), then book first success
             const slotsForDetails = nonConflicting.slice(0, 5).map(s => ({ configToken: s.configToken, date: s.date, time: s.time }));
-            const parallelResult = await getSlotDetailsParallel(auth.authToken, slotsForDetails, partySize);
+            const parallelResult = await getSlotDetailsParallel(auth.authToken, slotsForDetails, partySize, effectivePaymentId);
 
             if ("errors" in parallelResult) {
               // All failed — log and stream failure for first slot
@@ -419,7 +419,7 @@ export async function POST(request: Request) {
             console.log(`[SnipeWatch] ${serialized.restaurant.name}: ${nonConflicting.length} cancellation slots match snipe criteria`);
 
             const slotsForDetails = nonConflicting.slice(0, 3).map(s => ({ configToken: s.configToken, date: s.date, time: s.time }));
-            const parallelResult = await getSlotDetailsParallel(auth.authToken, slotsForDetails, partySize);
+            const parallelResult = await getSlotDetailsParallel(auth.authToken, slotsForDetails, partySize, effectivePaymentId);
 
             if ("errors" in parallelResult) {
               console.log(`[SnipeWatch] ${serialized.restaurant.name}: all slot details failed`);
