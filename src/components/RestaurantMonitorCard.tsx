@@ -17,7 +17,6 @@ function formatDate(dateStr: string): string {
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
-// #13: Booking failure info passed from parent
 interface BookingFailure {
   time: string;
   error: string;
@@ -36,8 +35,8 @@ interface Props {
   onBook: (slot: AvailabilitySlot) => void;
   bookingInProgress: string | null;
   lastChecked: string | null;
-  partySize?: number;          // #12: Current party size for filtering display
-  lastBookingFailure?: BookingFailure | null;  // #13: Last failure for this restaurant
+  partySize?: number;
+  lastBookingFailure?: BookingFailure | null;
 }
 
 export default function RestaurantMonitorCard({
@@ -57,96 +56,108 @@ export default function RestaurantMonitorCard({
 }: Props) {
   const hasSlots = slots.length > 0;
   const newCount = slots.filter((s) => newSlotIds.has(s.id)).length;
+  const hasFitSlots = slots.some(s => s.maxParty >= partySize);
 
   return (
     <div
-      className={`rounded-2xl border overflow-hidden transition-all ${
-        hasSlots
-          ? "border-emerald-200 bg-white shadow-md"
-          : isMonitored
-            ? "border-stone-200 bg-white shadow-sm"
-            : "border-stone-100 bg-stone-50"
+      className={`relative rounded-2xl overflow-hidden transition-all duration-200 ${
+        hasSlots && hasFitSlots
+          ? "bg-white border border-emerald-100 shadow-[0_4px_24px_rgba(16,185,129,0.10)]"
+          : hasSlots
+            ? "bg-white border border-stone-200 shadow-[0_2px_12px_rgba(0,0,0,0.06)]"
+            : isMonitored
+              ? "bg-white border border-stone-200 shadow-sm"
+              : "bg-stone-50/80 border border-stone-100"
       }`}
     >
-      {/* Header */}
-      <div className="px-3 sm:px-5 py-3 sm:py-4">
+      {/* Colored left accent bar */}
+      {hasSlots && (
+        <div className={`absolute left-0 top-0 bottom-0 w-[3px] ${hasFitSlots ? "bg-emerald-500" : "bg-stone-300"}`} />
+      )}
+
+      {/* Card header */}
+      <div className="px-4 sm:px-5 pt-4 pb-3">
         <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm sm:text-base font-semibold text-charcoal truncate">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className={`text-sm font-semibold truncate ${isMonitored ? "text-stone-900" : "text-stone-400"}`}>
                 {restaurant.name}
               </h3>
               {newCount > 0 && (
-                <span className="shrink-0 text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded-full animate-pulse">
-                  +{newCount} NEW
+                <span className="shrink-0 text-[10px] font-bold text-white bg-emerald-500 px-2 py-0.5 rounded-full animate-pulse">
+                  +{newCount} new
+                </span>
+              )}
+              {autoBookEnabled && isAuthenticated && (
+                <span className="shrink-0 text-[10px] font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
+                  ⚡ Auto
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-2 mt-0.5 text-xs text-stone-400">
-              <span>{restaurant.neighborhood}</span>
-              <span>·</span>
-              <span>{restaurant.cuisine}</span>
-            </div>
-            <div className="flex items-center gap-1.5 mt-1">
+            <p className={`text-xs mt-0.5 ${isMonitored ? "text-stone-400" : "text-stone-300"}`}>
+              {restaurant.neighborhood} · {restaurant.cuisine}
+            </p>
+            <div className="flex items-center gap-2 mt-1.5">
               {restaurant.michelinStar && (
-                <span className="text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
-                  Michelin Star
-                </span>
-              )}
-              {restaurant.menuUrl && (
-                <a href={restaurant.menuUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-stone-400 hover:text-charcoal underline">Menu</a>
+                <span className="text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-md">★ Michelin</span>
               )}
               {restaurant.instagramUrl && (
-                <a href={restaurant.instagramUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-stone-400 hover:text-charcoal underline">IG</a>
+                <a href={restaurant.instagramUrl} target="_blank" rel="noopener noreferrer"
+                  className="text-[10px] text-stone-400 hover:text-stone-600 transition-colors">IG</a>
               )}
               {restaurant.website && (
-                <a href={restaurant.website} target="_blank" rel="noopener noreferrer" className="text-[10px] text-stone-400 hover:text-charcoal underline">Web</a>
+                <a href={restaurant.website} target="_blank" rel="noopener noreferrer"
+                  className="text-[10px] text-stone-400 hover:text-stone-600 transition-colors">Web</a>
               )}
               {restaurant.mapsUrl && (
-                <a href={restaurant.mapsUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-stone-400 hover:text-charcoal underline">Map</a>
+                <a href={restaurant.mapsUrl} target="_blank" rel="noopener noreferrer"
+                  className="text-[10px] text-stone-400 hover:text-stone-600 transition-colors">Map</a>
+              )}
+              {restaurant.menuUrl && (
+                <a href={restaurant.menuUrl} target="_blank" rel="noopener noreferrer"
+                  className="text-[10px] text-stone-400 hover:text-stone-600 transition-colors">Menu</a>
               )}
             </div>
           </div>
+
           <div className="flex items-center gap-1.5 shrink-0">
-            {/* Auto-book toggle (per restaurant) — always visible when monitored */}
             {isMonitored && (
               <button
                 onClick={() => isAuthenticated ? onToggleAutoBook(restaurant.id) : undefined}
-                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${
                   !isAuthenticated
                     ? "bg-stone-100 text-stone-300 cursor-not-allowed"
                     : autoBookEnabled
-                      ? "bg-emerald-500 text-white"
+                      ? "bg-indigo-600 text-white shadow-sm shadow-indigo-200"
                       : "bg-stone-100 text-stone-400 hover:bg-stone-200"
                 }`}
                 title={
-                  !isAuthenticated
-                    ? "Connect Resy account to enable auto-book"
-                    : autoBookEnabled
-                      ? "Auto-book ON — click to disable"
-                      : "Enable auto-book for this restaurant"
+                  !isAuthenticated ? "Connect Resy to enable auto-book"
+                    : autoBookEnabled ? "Auto-book ON — click to disable"
+                    : "Enable auto-book"
                 }
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
               </button>
             )}
-            {/* Monitor toggle */}
             <button
               onClick={() => onToggleMonitor(restaurant.id)}
-              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+              className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${
                 isMonitored
-                  ? "bg-charcoal text-white"
+                  ? "bg-stone-900 text-white"
                   : "bg-stone-100 text-stone-400 hover:bg-stone-200"
               }`}
-              title={isMonitored ? "Stop monitoring" : "Start monitoring"}
+              title={isMonitored ? "Stop monitoring" : "Monitor this restaurant"}
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 {isMonitored ? (
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                 ) : (
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
                 )}
               </svg>
             </button>
@@ -156,21 +167,14 @@ export default function RestaurantMonitorCard({
 
       {/* Slots */}
       {hasSlots && (
-        <div className="border-t border-stone-100 px-3 sm:px-5 py-3 bg-stone-50/50">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-emerald-700">
-              {slots.length} slot{slots.length !== 1 ? "s" : ""} across{" "}
-              {new Set(slots.map((s) => s.date)).size} date{new Set(slots.map((s) => s.date)).size !== 1 ? "s" : ""}
+        <div className="px-4 sm:px-5 pb-4">
+          <div className="flex items-center justify-between mb-2.5">
+            <span className={`text-xs font-semibold ${hasFitSlots ? "text-emerald-600" : "text-stone-400"}`}>
+              {slots.length} slot{slots.length !== 1 ? "s" : ""} · {new Set(slots.map(s => s.date)).size} date{new Set(slots.map(s => s.date)).size !== 1 ? "s" : ""}
             </span>
-            {autoBookEnabled && isAuthenticated && (
-              <span className="text-[10px] text-emerald-500 bg-emerald-50 px-1.5 py-0.5 rounded">
-                Auto-book ON
-              </span>
-            )}
           </div>
-          <div className="space-y-2 max-h-64 overflow-y-auto">
+          <div className="space-y-3 max-h-60 overflow-y-auto">
             {(() => {
-              // Group slots by date
               const byDate = new Map<string, AvailabilitySlot[]>();
               for (const slot of slots) {
                 const existing = byDate.get(slot.date) ?? [];
@@ -180,21 +184,18 @@ export default function RestaurantMonitorCard({
               const sortedDates = [...byDate.keys()].sort();
 
               return sortedDates.map((date) => {
-                // Sort: 4-person capable slots first, then 2-person-only
                 const dateSlots = (byDate.get(date) ?? []).slice().sort((a, b) => {
                   const aFits = a.maxParty >= partySize ? 1 : 0;
                   const bFits = b.maxParty >= partySize ? 1 : 0;
-                  if (aFits !== bFits) return bFits - aFits; // fits-party first
-                  return a.time.localeCompare(b.time); // then by time
+                  if (aFits !== bFits) return bFits - aFits;
+                  return a.time.localeCompare(b.time);
                 });
-                const partySlots = dateSlots.filter(s => s.maxParty >= partySize);
-                const smallSlots = dateSlots.filter(s => s.maxParty < partySize);
                 return (
                   <div key={date}>
-                    <p className="text-[10px] font-semibold text-stone-500 uppercase tracking-wide mb-1">
+                    <p className="text-[10px] font-semibold text-stone-400 uppercase tracking-widest mb-1.5">
                       {formatDate(date)}
                     </p>
-                    <div className="flex flex-wrap gap-1">
+                    <div className="flex flex-wrap gap-1.5">
                       {dateSlots.map((slot) => {
                         const isNew = newSlotIds.has(slot.id);
                         const isBooking = bookingInProgress === slot.id;
@@ -206,41 +207,28 @@ export default function RestaurantMonitorCard({
                             target="_blank"
                             rel="noopener noreferrer"
                             onClick={(e) => {
-                              if (isAuthenticated) {
-                                e.preventDefault();
-                                onBook(slot);
-                              }
+                              if (isAuthenticated) { e.preventDefault(); onBook(slot); }
                             }}
-                            className={`group relative inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs border cursor-pointer transition-colors ${
+                            title={!fitsParty ? `Max ${slot.maxParty} guests` : slot.tableType}
+                            className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-semibold cursor-pointer select-none transition-all ${
                               isBooking
-                                ? "bg-amber-50 border-amber-300 text-amber-700"
+                                ? "bg-amber-400 text-white animate-pulse"
                                 : isNew && fitsParty
-                                  ? "bg-emerald-50 border-emerald-300 text-emerald-700 hover:bg-emerald-100"
+                                  ? "bg-emerald-500 text-white ring-2 ring-emerald-200 hover:bg-emerald-600"
                                   : fitsParty
-                                    ? "bg-white border-stone-200 text-charcoal hover:bg-stone-50 hover:border-stone-300"
-                                    : "bg-stone-50 border-stone-150 text-stone-400 hover:bg-stone-100"
+                                    ? "bg-stone-800 text-white hover:bg-stone-700"
+                                    : "bg-stone-100 text-stone-400 hover:bg-stone-200"
                             }`}
-                            title={fitsParty ? undefined : `Max ${slot.maxParty} guests`}
                           >
-                            {isNew && fitsParty && (
-                              <span className="w-1 h-1 rounded-full bg-emerald-500 shrink-0" />
-                            )}
-                            <span className={`font-medium ${!fitsParty ? "opacity-60" : ""}`}>{formatTime12(slot.time)}</span>
-                            <span className="text-[10px] text-stone-400">{slot.tableType}</span>
+                            <span>{formatTime12(slot.time)}</span>
                             {!fitsParty && (
-                              <span className="text-[10px] text-stone-400 font-medium">max {slot.maxParty}</span>
+                              <span className="text-[9px] opacity-70">·{slot.maxParty}</span>
                             )}
-                            {isBooking && (
-                              <span className="text-[10px] text-amber-600 font-medium">Booking...</span>
-                            )}
+                            {isBooking && <span>…</span>}
                           </a>
                         );
                       })}
                     </div>
-                    {/* Show divider between 4-person and 2-person slots */}
-                    {partySlots.length > 0 && smallSlots.length > 0 && (
-                      <p className="text-[9px] text-stone-300 mt-1">↑ fits {partySize} · ↓ max 2</p>
-                    )}
                   </div>
                 );
               });
@@ -249,31 +237,29 @@ export default function RestaurantMonitorCard({
         </div>
       )}
 
-      {/* #13: Persistent booking failure banner (stays until next success) */}
+      {/* Booking failure */}
       {lastBookingFailure && (
-        <div className="border-t border-red-100 px-3 sm:px-5 py-2 bg-red-50/50">
+        <div className="border-t border-red-100 px-4 sm:px-5 py-2 bg-red-50/60 border-l-2 border-l-red-400">
           <p className="text-[10px] text-red-600 truncate" title={lastBookingFailure.error}>
-            Last auto-book failed: {lastBookingFailure.error}
+            Auto-book failed: {lastBookingFailure.error}
           </p>
         </div>
       )}
 
-      {/* #14: Auto-book explanation when not authenticated */}
+      {/* No-auth nudge */}
       {isMonitored && !isAuthenticated && (
-        <div className="border-t border-amber-100 px-3 sm:px-5 py-2 bg-amber-50/30">
-          <p className="text-[10px] text-amber-600">
-            Connect your Resy account in Settings to enable auto-booking
-          </p>
+        <div className="border-t border-amber-100 px-4 sm:px-5 py-2">
+          <p className="text-[10px] text-amber-600">Connect Resy in Settings to enable auto-booking</p>
         </div>
       )}
 
-      {/* Footer: status */}
+      {/* Empty state footer */}
       {isMonitored && !hasSlots && (
-        <div className="border-t border-stone-100 px-3 sm:px-5 py-2.5">
-          <p className="text-[10px] text-stone-400">
+        <div className="px-4 sm:px-5 pb-3.5">
+          <p className="text-[11px] text-stone-400">
             {lastChecked
-              ? `No openings · Checked ${new Date(lastChecked).toLocaleTimeString()}`
-              : "Waiting for first scan..."}
+              ? `No openings · ${new Date(lastChecked).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`
+              : "Waiting for first scan…"}
           </p>
         </div>
       )}

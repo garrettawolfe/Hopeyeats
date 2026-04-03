@@ -137,6 +137,7 @@ function HomeInner() {
   const [showDebugLog, setShowDebugLog] = useState(false);
   const [nextPollCountdown, setNextPollCountdown] = useState<number | null>(null);
   const nextPollAtRef = useRef<number | null>(null);
+  const [wafBlocked, setWafBlocked] = useState(false);
 
   const addLog = useCallback((msg: string) => {
     const ts = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -304,9 +305,7 @@ function HomeInner() {
         body: JSON.stringify({
           restaurantIds: allRestaurantIds,
           dateLimits,
-          // Always poll party=2 to get ALL slots (2-person + 4-person).
-          // activePartySize is used client-side for sorting/display only.
-          partySize: 2,
+          partySize: currentSettings?.partySize ?? 2,
           resolveIds: true,
           notifications: buildNotificationConfig(),
           authToken: currentAuth?.authToken,
@@ -436,11 +435,13 @@ function HomeInner() {
               const had200s = result.diagnostics?.includes("200:") ?? false;
               if (had200s) {
                 consecutiveFailsRef.current = 0;
+                setWafBlocked(false);
               } else if (result.diffs.length > 0) {
                 consecutiveFailsRef.current++;
                 if (consecutiveFailsRef.current > 1) {
                   addLog(`WAF blocked — backing off (${consecutiveFailsRef.current} consecutive failures)`);
                 }
+                setWafBlocked(consecutiveFailsRef.current > 1);
               }
 
               addLog(`Poll done — ${result.diffs.length} checked, ${totalSlots} slots, ${totalNew} new. baseline=${result.isBaseline}${withSlots.length > 0 ? `. Avail: ${withSlots.join(", ")}` : ""}`);
@@ -491,6 +492,7 @@ function HomeInner() {
   // Only start polling when: settings loaded AND Resy auth fully resolved AND authenticated
   const resyAuthenticated = resyAuth?.authenticated === true;
   const consecutiveFailsRef = useRef(0);
+  const [wafBlocked, setWafBlocked] = useState(false);
   useEffect(() => {
     if (!settings || !resyAuthenticated) return;
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
@@ -748,9 +750,9 @@ function HomeInner() {
   }
 
   return (
-    <div className="min-h-screen bg-cream">
+    <div className="min-h-screen bg-surface">
       {/* Header */}
-      <header className="sticky top-0 z-30 bg-charcoal text-white">
+      <header className="sticky top-0 z-30 bg-ink text-white">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4">
           <div className="flex items-center justify-between">
             <div className="min-w-0">
@@ -759,24 +761,36 @@ function HomeInner() {
                 {activeProfileName && <span className="text-stone-300">{activeProfileName}</span>}
                 {activeProfileName && " · "}
                 Monitoring {monitoredIds.size} restaurants
+                {totalSlots > 0 && ` · ${totalSlots} open`}
               </p>
             </div>
             <div className="flex items-center gap-2 sm:gap-4">
-              {/* Status indicator */}
-              <div className="flex items-center gap-1.5 text-[10px] sm:text-xs text-stone-400">
-                <span
-                  className={`w-2 h-2 rounded-full shrink-0 ${
-                    isPolling ? "bg-amber-400 animate-pulse"
-                      : totalSlots > 0 ? "bg-emerald-500 animate-pulse"
-                        : "bg-stone-500"
-                  }`}
-                />
+              {/* Status pill */}
+              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                wafBlocked
+                  ? "bg-orange-500/15 text-orange-300 border border-orange-500/20"
+                  : isPolling
+                    ? "bg-amber-400/15 text-amber-300 border border-amber-400/20"
+                    : totalSlots > 0
+                      ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
+                      : "bg-stone-700/50 text-stone-400 border border-stone-700"
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  wafBlocked ? "bg-orange-400"
+                  : isPolling ? "bg-amber-400 animate-pulse"
+                  : totalSlots > 0 ? "bg-emerald-400 animate-pulse"
+                  : "bg-stone-500"
+                }`} />
                 <span className="hidden sm:inline">
-                  {isPolling
-                    ? scanProgress ? `Scanning ${scanProgress.restaurant.split(",")[0]}...` : "Scanning..."
-                    : lastPollTime
-                      ? `Poll #${pollCount} · ${timeAgo(lastPollTime)}${nextPollCountdown !== null && !isPolling ? ` · next in ${nextPollCountdown}s` : ""}`
-                      : "Starting..."}
+                  {wafBlocked
+                    ? `Blocked · retry ${nextPollCountdown !== null ? `in ${nextPollCountdown}s` : "soon"}`
+                    : isPolling
+                      ? scanProgress ? `${scanProgress.restaurant.split(",")[0]}` : "Scanning..."
+                      : lastPollTime
+                        ? nextPollCountdown !== null
+                          ? `Next in ${nextPollCountdown}s`
+                          : `${timeAgo(lastPollTime)}`
+                        : "Starting..."}
                 </span>
               </div>
 
@@ -825,7 +839,7 @@ function HomeInner() {
 
         {/* Progress bar + activity feed */}
         {isPolling && (
-          <div className="bg-charcoal/90 border-t border-stone-700">
+          <div className="bg-ink/90 border-t border-stone-700">
             <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-2">
               {scanProgress && (
                 <div className="mb-2">
@@ -865,7 +879,7 @@ function HomeInner() {
         <div className="mb-4 sm:mb-6 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3 text-sm">
             <span className="text-stone-600">
-              <strong className="text-charcoal">{monitoredIds.size}</strong> monitored
+              <strong className="text-slate-900">{monitoredIds.size}</strong> monitored
             </span>
             {totalSlots > 0 && (
               <span className="text-emerald-600 font-medium">
@@ -898,10 +912,14 @@ function HomeInner() {
             </button>
             <button
               onClick={poll}
-              disabled={isPolling}
-              className="px-3 py-1.5 bg-charcoal text-white rounded-lg text-xs font-medium hover:bg-charcoal/80 transition-colors disabled:opacity-40"
+              disabled={isPolling || wafBlocked}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 ${
+                wafBlocked
+                  ? "bg-orange-100 text-orange-500 cursor-not-allowed"
+                  : "bg-ink text-white hover:bg-ink/80"
+              }`}
             >
-              {isPolling ? "Scanning..." : "Scan Now"}
+              {isPolling ? "Scanning..." : wafBlocked ? "Blocked" : "Scan Now"}
             </button>
           </div>
         </div>
@@ -909,7 +927,7 @@ function HomeInner() {
         {/* Booking Activity */}
         {bookingLog.length > 0 && (
           <div className="mb-4 bg-white border border-stone-200 rounded-2xl p-3 sm:p-4">
-            <h2 className="text-sm font-semibold text-charcoal mb-2">Recent Bookings</h2>
+            <h2 className="text-sm font-semibold text-slate-900 mb-2">Recent Bookings</h2>
             <div className="space-y-1.5 max-h-28 overflow-y-auto">
               {bookingLog.map((log, i) => (
                 <div
@@ -967,6 +985,22 @@ function HomeInner() {
           )}
         </div>
 
+        {/* WAF blocked banner */}
+        {wafBlocked && (
+          <div className="mb-4 bg-orange-50 border border-orange-200 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-orange-500 text-lg">⚠</span>
+              <div>
+                <p className="text-sm font-medium text-orange-800">Rate-limited by Resy</p>
+                <p className="text-xs text-orange-600">Resy&apos;s anti-bot system is blocking requests from this server. Auto-backing off{nextPollCountdown !== null ? ` — retrying in ${nextPollCountdown}s` : ""}.</p>
+              </div>
+            </div>
+            <button onClick={poll} disabled={isPolling} className="shrink-0 px-3 py-1.5 text-xs font-medium bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-40">
+              Retry Now
+            </button>
+          </div>
+        )}
+
         {/* Auth banner */}
         {!resyAuth?.authenticated && (
           <div className="mb-4 sm:mb-6 bg-gold/10 border border-gold/30 rounded-2xl px-4 sm:px-6 py-3 sm:py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -976,7 +1010,7 @@ function HomeInner() {
             </div>
             <button
               onClick={() => setShowSettings(true)}
-              className="shrink-0 px-4 py-2 bg-charcoal text-white rounded-xl text-sm font-medium hover:bg-charcoal/90 transition-colors"
+              className="shrink-0 px-4 py-2 bg-ink text-white rounded-xl text-sm font-medium hover:bg-ink/90 transition-colors"
             >
               Settings
             </button>
@@ -991,7 +1025,7 @@ function HomeInner() {
               onClick={() => setAppMode(key)}
               className={`px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
                 appMode === key
-                  ? key === "snipe" ? "bg-red-600 text-white" : "bg-charcoal text-white"
+                  ? key === "snipe" ? "bg-red-600 text-white" : "bg-ink text-white"
                   : "bg-white border border-stone-200 text-stone-500 hover:bg-stone-50"
               }`}
             >
@@ -1026,14 +1060,14 @@ function HomeInner() {
         )}
 
         {/* City Tabs */}
-        <div className="flex gap-1 mb-3">
+        <div className="flex gap-1 mb-3 flex-wrap">
           {([["all", "All Cities"], ["nyc", "NYC"], ["miami", "Miami"], ["hamptons", "Hamptons"]] as const).map(([key, label]) => (
             <button
               key={key}
               onClick={() => setCityFilter(key as typeof cityFilter)}
-              className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
+              className={`px-4 py-1.5 rounded-full text-xs font-medium transition-colors ${
                 cityFilter === key
-                  ? "bg-charcoal text-white"
+                  ? "bg-ink text-white"
                   : "bg-white border border-stone-200 text-stone-500 hover:bg-stone-50"
               }`}
             >
@@ -1044,14 +1078,14 @@ function HomeInner() {
 
         {/* Meal Type + Party Size Row */}
         <div className="flex flex-wrap items-center gap-2 mb-3">
-          <div className="flex gap-1">
+          <div className="flex gap-1 flex-wrap">
             {([["all", "All"], ["dinner", "Dinner"], ["bar", "Bar"], ["brunch", "Brunch"]] as const).map(([key, label]) => (
               <button
                 key={key}
                 onClick={() => setMealFilter(key as typeof mealFilter)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                className={`px-4 py-1.5 rounded-full text-xs font-medium transition-colors ${
                   mealFilter === key
-                    ? "bg-gold text-white"
+                    ? "bg-slate-800 text-white"
                     : "bg-white border border-stone-200 text-stone-500 hover:bg-stone-50"
                 }`}
               >
@@ -1072,9 +1106,9 @@ function HomeInner() {
                     saveSettings(next);
                   }
                 }}
-                className={`w-8 h-8 rounded-lg text-sm font-medium transition-colors ${
+                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
                   activePartySize === size
-                    ? "bg-charcoal text-white"
+                    ? "bg-ink text-white"
                     : "bg-white border border-stone-200 text-stone-500 hover:bg-stone-50"
                 }`}
               >
@@ -1100,7 +1134,7 @@ function HomeInner() {
                 onClick={() => setFilterMode(mode)}
                 className={`px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-medium transition-colors capitalize ${
                   filterMode === mode
-                    ? "bg-charcoal text-white"
+                    ? "bg-ink text-white"
                     : "bg-white border border-stone-200 text-stone-500 hover:bg-stone-50"
                 }`}
               >
@@ -1115,7 +1149,7 @@ function HomeInner() {
           <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[11px]">
             <span className="text-stone-400">Monitoring:</span>
             {settings.preferredDays.length > 0 && (
-              <span className="bg-charcoal/5 text-stone-600 px-2 py-0.5 rounded-full font-medium">
+              <span className="bg-slate-900/5 text-stone-600 px-2 py-0.5 rounded-full font-medium">
                 {settings.preferredDays.map(d => d.slice(0, 3).charAt(0).toUpperCase() + d.slice(1, 3)).join(" · ")}
               </span>
             )}
@@ -1131,16 +1165,16 @@ function HomeInner() {
                 return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
               };
               return (
-                <span className="bg-charcoal/5 text-stone-600 px-2 py-0.5 rounded-full font-medium">
+                <span className="bg-slate-900/5 text-stone-600 px-2 py-0.5 rounded-full font-medium">
                   {fmt(tw.start)}–{fmt(tw.end)}
                 </span>
               );
             })()}
-            <span className="bg-charcoal/5 text-stone-600 px-2 py-0.5 rounded-full font-medium">
+            <span className="bg-slate-900/5 text-stone-600 px-2 py-0.5 rounded-full font-medium">
               Party of {activePartySize}
             </span>
             {cityFilter !== "all" && (
-              <span className="bg-charcoal/5 text-stone-600 px-2 py-0.5 rounded-full font-medium capitalize">
+              <span className="bg-slate-900/5 text-stone-600 px-2 py-0.5 rounded-full font-medium capitalize">
                 {cityFilter.toUpperCase()}
               </span>
             )}
