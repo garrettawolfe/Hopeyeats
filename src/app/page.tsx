@@ -492,7 +492,6 @@ function HomeInner() {
   // Only start polling when: settings loaded AND Resy auth fully resolved AND authenticated
   const resyAuthenticated = resyAuth?.authenticated === true;
   const consecutiveFailsRef = useRef(0);
-  const [wafBlocked, setWafBlocked] = useState(false);
   useEffect(() => {
     if (!settings || !resyAuthenticated) return;
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
