@@ -127,7 +127,7 @@ function HomeInner() {
   const [filterMode, setFilterMode] = useState<"all" | "available" | "monitored">("all");
   const [cityFilter, setCityFilter] = useState<"all" | "nyc" | "miami" | "hamptons">("all");
   const [mealFilter, setMealFilter] = useState<"all" | "dinner" | "bar" | "brunch">("all");
-  const [activePartySize, setActivePartySize] = useState<2 | 4>(4);
+  const [activePartySize, setActivePartySize] = useState<2 | 4>(4); // default to 4
   const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
   const [appMode, setAppMode] = useState<"monitor" | "snipe">("monitor");
   const [snipeWatchTargets, setSnipeWatchTargets] = useState<SnipeWatchTarget[]>([]);
@@ -135,6 +135,8 @@ function HomeInner() {
   snipeWatchTargetsRef.current = snipeWatchTargets;
   const [debugLog, setDebugLog] = useState<string[]>([]);
   const [showDebugLog, setShowDebugLog] = useState(false);
+  const [nextPollCountdown, setNextPollCountdown] = useState<number | null>(null);
+  const nextPollAtRef = useRef<number | null>(null);
 
   const addLog = useCallback((msg: string) => {
     const ts = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -302,7 +304,9 @@ function HomeInner() {
         body: JSON.stringify({
           restaurantIds: allRestaurantIds,
           dateLimits,
-          partySize: currentSettings?.partySize ?? 2,
+          // Always poll party=2 to get ALL slots (2-person + 4-person).
+          // activePartySize is used client-side for sorting/display only.
+          partySize: 2,
           resolveIds: true,
           notifications: buildNotificationConfig(),
           authToken: currentAuth?.authToken,
@@ -503,13 +507,26 @@ function HomeInner() {
       if (fails > 0) {
         console.log(`[WolfePack] Backing off: ${Math.round(interval / 1000)}s (${fails} consecutive failures)`);
       }
+      nextPollAtRef.current = Date.now() + interval;
       intervalRef.current = setTimeout(() => {
+        nextPollAtRef.current = null;
         poll();
         scheduleNext();
       }, interval);
     };
     scheduleNext();
-    return () => { if (intervalRef.current) clearTimeout(intervalRef.current); };
+    // Countdown ticker
+    const countdownTimer = setInterval(() => {
+      if (nextPollAtRef.current) {
+        setNextPollCountdown(Math.max(0, Math.round((nextPollAtRef.current - Date.now()) / 1000)));
+      } else {
+        setNextPollCountdown(null);
+      }
+    }, 1000);
+    return () => {
+      if (intervalRef.current) clearTimeout(intervalRef.current);
+      clearInterval(countdownTimer);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings !== null, resyAuthenticated]);
 
@@ -690,10 +707,20 @@ function HomeInner() {
   });
 
   const sorted = [...filtered].sort((a, b) => {
-    const aSlots = getFilteredSlots(a.id).length;
-    const bSlots = getFilteredSlots(b.id).length;
-    if (aSlots > 0 && bSlots === 0) return -1;
-    if (bSlots > 0 && aSlots === 0) return 1;
+    const aSlots = getFilteredSlots(a.id);
+    const bSlots = getFilteredSlots(b.id);
+    const aHas = aSlots.length > 0;
+    const bHas = bSlots.length > 0;
+    // Cards with any slots above cards with none
+    if (aHas && !bHas) return -1;
+    if (bHas && !aHas) return 1;
+    if (aHas && bHas) {
+      // Within slotted cards: ones with 4-person slots first
+      const aHas4 = aSlots.some(s => s.maxParty >= activePartySize);
+      const bHas4 = bSlots.some(s => s.maxParty >= activePartySize);
+      if (aHas4 && !bHas4) return -1;
+      if (bHas4 && !aHas4) return 1;
+    }
     return a.name.localeCompare(b.name);
   });
 
@@ -747,7 +774,9 @@ function HomeInner() {
                 <span className="hidden sm:inline">
                   {isPolling
                     ? scanProgress ? `Scanning ${scanProgress.restaurant.split(",")[0]}...` : "Scanning..."
-                    : lastPollTime ? `Poll #${pollCount} · ${timeAgo(lastPollTime)}` : "Starting..."}
+                    : lastPollTime
+                      ? `Poll #${pollCount} · ${timeAgo(lastPollTime)}${nextPollCountdown !== null && !isPolling ? ` · next in ${nextPollCountdown}s` : ""}`
+                      : "Starting..."}
                 </span>
               </div>
 
@@ -1081,6 +1110,53 @@ function HomeInner() {
           </div>
         </div>
 
+        {/* Active Filters Summary */}
+        {settings && (settings.preferredDays.length > 0 || settings.blackoutDates?.length > 0) && (
+          <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[11px]">
+            <span className="text-stone-400">Monitoring:</span>
+            {settings.preferredDays.length > 0 && (
+              <span className="bg-charcoal/5 text-stone-600 px-2 py-0.5 rounded-full font-medium">
+                {settings.preferredDays.map(d => d.slice(0, 3).charAt(0).toUpperCase() + d.slice(1, 3)).join(" · ")}
+              </span>
+            )}
+            {(() => {
+              const days = settings.preferredDays;
+              const windows = settings.dayTimeWindows;
+              if (!windows || days.length === 0) return null;
+              const firstDay = days[0];
+              const tw = windows[firstDay];
+              if (!tw?.start || !tw?.end) return null;
+              const fmt = (t: string) => {
+                const [h, m] = t.split(":").map(Number);
+                return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
+              };
+              return (
+                <span className="bg-charcoal/5 text-stone-600 px-2 py-0.5 rounded-full font-medium">
+                  {fmt(tw.start)}–{fmt(tw.end)}
+                </span>
+              );
+            })()}
+            <span className="bg-charcoal/5 text-stone-600 px-2 py-0.5 rounded-full font-medium">
+              Party of {activePartySize}
+            </span>
+            {cityFilter !== "all" && (
+              <span className="bg-charcoal/5 text-stone-600 px-2 py-0.5 rounded-full font-medium capitalize">
+                {cityFilter.toUpperCase()}
+              </span>
+            )}
+            {mealFilter !== "all" && (
+              <span className="bg-gold/10 text-amber-700 px-2 py-0.5 rounded-full font-medium capitalize">
+                {mealFilter}
+              </span>
+            )}
+            {search && (
+              <span className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full font-medium">
+                &ldquo;{search}&rdquo;
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Restaurant Grid */}
         {sorted.length === 0 ? (
           <div className="text-center py-16 text-stone-400">
@@ -1108,7 +1184,7 @@ function HomeInner() {
                 onBook={handleBook}
                 bookingInProgress={bookingInProgress}
                 lastChecked={lastCheckedMap.get(r.id) ?? null}
-                partySize={settings?.partySize ?? 2}
+                partySize={activePartySize}
                 lastBookingFailure={(() => {
                   // #13: Find most recent failure for this restaurant (only if no subsequent success)
                   const logs = bookingLog.filter(l => l.restaurantName === r.name);

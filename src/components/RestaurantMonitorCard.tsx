@@ -180,7 +180,15 @@ export default function RestaurantMonitorCard({
               const sortedDates = [...byDate.keys()].sort();
 
               return sortedDates.map((date) => {
-                const dateSlots = byDate.get(date)!;
+                // Sort: 4-person capable slots first, then 2-person-only
+                const dateSlots = (byDate.get(date) ?? []).slice().sort((a, b) => {
+                  const aFits = a.maxParty >= partySize ? 1 : 0;
+                  const bFits = b.maxParty >= partySize ? 1 : 0;
+                  if (aFits !== bFits) return bFits - aFits; // fits-party first
+                  return a.time.localeCompare(b.time); // then by time
+                });
+                const partySlots = dateSlots.filter(s => s.maxParty >= partySize);
+                const smallSlots = dateSlots.filter(s => s.maxParty < partySize);
                 return (
                   <div key={date}>
                     <p className="text-[10px] font-semibold text-stone-500 uppercase tracking-wide mb-1">
@@ -190,6 +198,7 @@ export default function RestaurantMonitorCard({
                       {dateSlots.map((slot) => {
                         const isNew = newSlotIds.has(slot.id);
                         const isBooking = bookingInProgress === slot.id;
+                        const fitsParty = slot.maxParty >= partySize;
                         return (
                           <a
                             key={slot.id}
@@ -201,26 +210,25 @@ export default function RestaurantMonitorCard({
                                 e.preventDefault();
                                 onBook(slot);
                               }
-                              // If not authenticated, let the link open Resy
                             }}
                             className={`group relative inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs border cursor-pointer transition-colors ${
                               isBooking
                                 ? "bg-amber-50 border-amber-300 text-amber-700"
-                                : isNew
+                                : isNew && fitsParty
                                   ? "bg-emerald-50 border-emerald-300 text-emerald-700 hover:bg-emerald-100"
-                                  : "bg-white border-stone-200 text-charcoal hover:bg-stone-50 hover:border-stone-300"
+                                  : fitsParty
+                                    ? "bg-white border-stone-200 text-charcoal hover:bg-stone-50 hover:border-stone-300"
+                                    : "bg-stone-50 border-stone-150 text-stone-400 hover:bg-stone-100"
                             }`}
+                            title={fitsParty ? undefined : `Max ${slot.maxParty} guests`}
                           >
-                            {isNew && (
+                            {isNew && fitsParty && (
                               <span className="w-1 h-1 rounded-full bg-emerald-500 shrink-0" />
                             )}
-                            <span className="font-medium">{formatTime12(slot.time)}</span>
+                            <span className={`font-medium ${!fitsParty ? "opacity-60" : ""}`}>{formatTime12(slot.time)}</span>
                             <span className="text-[10px] text-stone-400">{slot.tableType}</span>
-                            {/* #12: Show max party if slot can't fit current party */}
-                            {slot.maxParty < partySize && (
-                              <span className="text-[10px] text-amber-500 font-medium" title={`Max ${slot.maxParty} guests`}>
-                                max {slot.maxParty}
-                              </span>
+                            {!fitsParty && (
+                              <span className="text-[10px] text-stone-400 font-medium">max {slot.maxParty}</span>
                             )}
                             {isBooking && (
                               <span className="text-[10px] text-amber-600 font-medium">Booking...</span>
@@ -229,6 +237,10 @@ export default function RestaurantMonitorCard({
                         );
                       })}
                     </div>
+                    {/* Show divider between 4-person and 2-person slots */}
+                    {partySlots.length > 0 && smallSlots.length > 0 && (
+                      <p className="text-[9px] text-stone-300 mt-1">↑ fits {partySize} · ↓ max 2</p>
+                    )}
                   </div>
                 );
               });
