@@ -497,7 +497,11 @@ function HomeInner() {
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission();
     }
-    poll();
+    // Wait 10s before first poll so user can pick filters (brunch, party size, etc.)
+    const initialDelay = setTimeout(() => {
+      poll();
+    }, 10_000);
+    nextPollAtRef.current = Date.now() + 10_000;
     // Dynamic interval with exponential backoff after consecutive all-500 polls
     const scheduleNext = () => {
       const fails = consecutiveFailsRef.current;
@@ -525,6 +529,7 @@ function HomeInner() {
       }
     }, 1000);
     return () => {
+      clearTimeout(initialDelay);
       if (intervalRef.current) clearTimeout(intervalRef.current);
       clearInterval(countdownTimer);
     };
@@ -910,10 +915,12 @@ function HomeInner() {
             <button
               onClick={poll}
               disabled={isPolling || wafBlocked}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40 ${
+              className={`px-5 py-2 rounded-full text-sm font-semibold transition-all disabled:opacity-40 shadow-md ${
                 wafBlocked
                   ? "bg-orange-100 text-orange-500 cursor-not-allowed"
-                  : "bg-ink text-white hover:bg-ink/80"
+                  : isPolling
+                    ? "bg-emerald-500 text-white animate-pulse"
+                    : "bg-emerald-500 text-white hover:bg-emerald-600 hover:shadow-lg"
               }`}
             >
               {isPolling ? "Scanning..." : wafBlocked ? "Blocked" : "Scan Now"}
@@ -1079,7 +1086,26 @@ function HomeInner() {
             {([["all", "All"], ["dinner", "Dinner"], ["bar", "Bar"], ["brunch", "Brunch"]] as const).map(([key, label]) => (
               <button
                 key={key}
-                onClick={() => setMealFilter(key as typeof mealFilter)}
+                onClick={() => {
+                  setMealFilter(key as typeof mealFilter);
+                  // Brunch preset: 4 people, 12:00-3:30 PM, Saturday only
+                  if (key === "brunch") {
+                    setActivePartySize(4);
+                    const brunchWindows: Record<string, { start: string; end: string }> = {
+                      saturday: { start: "12:00", end: "15:30" },
+                    };
+                    if (settings) {
+                      const next = {
+                        ...settings,
+                        partySize: 4,
+                        preferredDays: ["saturday"],
+                        dayTimeWindows: brunchWindows,
+                      };
+                      setSettings(next);
+                      saveSettings(next);
+                    }
+                  }
+                }}
                 className={`px-4 py-1.5 rounded-full text-xs font-medium transition-colors ${
                   mealFilter === key
                     ? "bg-slate-800 text-white"
