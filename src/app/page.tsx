@@ -763,9 +763,9 @@ function HomeInner() {
                 {totalSlots > 0 && ` · ${totalSlots} open`}
               </p>
             </div>
-            <div className="flex items-center gap-2 sm:gap-4">
-              {/* Status pill */}
-              <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+            <div className="flex items-center gap-1.5 sm:gap-3">
+              {/* Status pill — always visible, even on mobile */}
+              <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] sm:text-xs font-medium transition-colors ${
                 wafBlocked
                   ? "bg-orange-500/15 text-orange-300 border border-orange-500/20"
                   : isPolling
@@ -774,22 +774,20 @@ function HomeInner() {
                       ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
                       : "bg-stone-700/50 text-stone-400 border border-stone-700"
               }`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                   wafBlocked ? "bg-orange-400"
                   : isPolling ? "bg-amber-400 animate-pulse"
                   : totalSlots > 0 ? "bg-emerald-400 animate-pulse"
                   : "bg-stone-500"
                 }`} />
-                <span className="hidden sm:inline">
+                <span>
                   {wafBlocked
-                    ? `Blocked · retry ${nextPollCountdown !== null ? `in ${nextPollCountdown}s` : "soon"}`
+                    ? nextPollCountdown !== null ? `${nextPollCountdown}s` : "Blocked"
                     : isPolling
-                      ? scanProgress ? `${scanProgress.restaurant.split(",")[0]}` : "Scanning..."
-                      : lastPollTime
-                        ? nextPollCountdown !== null
-                          ? `Next in ${nextPollCountdown}s`
-                          : `${timeAgo(lastPollTime)}`
-                        : "Starting..."}
+                      ? "Scanning"
+                      : nextPollCountdown !== null
+                        ? `${nextPollCountdown}s`
+                        : lastPollTime ? timeAgo(lastPollTime) : "…"}
                 </span>
               </div>
 
@@ -814,7 +812,7 @@ function HomeInner() {
 
               <button
                 onClick={() => setShowSettings(true)}
-                className="flex items-center gap-1.5 text-sm text-stone-300 hover:text-white transition-colors border border-stone-700 hover:border-stone-500 px-2.5 sm:px-4 py-2 rounded-lg"
+                className="flex items-center gap-1.5 text-sm text-stone-300 hover:text-white transition-colors border border-stone-700 hover:border-stone-500 w-8 h-8 sm:w-auto sm:h-auto sm:px-4 sm:py-2 justify-center rounded-lg"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
