@@ -1125,4 +1125,62 @@ export const restaurants: Restaurant[] = [
     menuUrl: null,
     mapsUrl: "https://www.google.com/maps/search/?api=1&query=Konban+Chelsea+NYC",
   },
+  {
+    id: "waverly-inn",
+    name: "Waverly Inn",
+    neighborhood: "West Village",
+    borough: "Manhattan",
+    cuisine: "New American",
+    ambiance:
+      "A candlelit, ivy-covered townhouse that feels like the most romantic private club in New York — fireplaces, a famous Edward Sorel mural of Village luminaries, and a garden room that earns every superlative. Dinner here is an event.",
+    mustOrder:
+      "Chicken Pot Pie, Mac & Cheese with Black Truffle, Hudson Valley Duck Breast, Eggs Benedict (brunch), Jonah Crab Cakes (brunch)",
+    reservationMethod: "both",
+    reservationEmail: "fritz@waverlynyc.com",
+    contactEmail: "fritz@waverlynyc.com",
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/the-waverly-inn",
+    website: "https://www.waverlynyc.com",
+    advanceDays: 14,
+    bookingTime: null,
+    bookingTip:
+      "Opens 14 days in advance on Resy. Some diners report success booking 24 hours in advance for prime tables. Email fritz@waverlynyc.com for special requests or larger parties.",
+    walkInOption: "Possible but not reliable — call ahead",
+    phone: "(917) 828-1154",
+    michelinStar: false,
+    bibGourmand: false,
+    priceRange: "$$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["New American", "Brunch", "Romantic", "West Village", "Historic"],
+  },
+  {
+    id: "commerce-inn",
+    name: "The Commerce Inn",
+    neighborhood: "West Village",
+    borough: "Manhattan",
+    cuisine: "Early American / Shaker Tavern",
+    ambiance:
+      "From the team behind Via Carota and Buvette — a warmly lit Shaker-inspired tavern on one of the West Village's most storied streets. Ceramic water jugs, chalkboard menus, and heartfelt cooking that feels both historic and completely of the moment.",
+    mustOrder:
+      "Lamb Chops, Pickled Oysters, Ribeye with Fried Onions, Rarebit, Salt Beef Hash with Dropped Eggs (brunch), Half Fried Chicken with Hot Pepper Jelly (brunch)",
+    reservationMethod: "resy",
+    reservationEmail: null,
+    contactEmail: null,
+    resyUrl: "https://resy.com/cities/new-york-ny/venues/the-commerce-inn",
+    website: "https://www.thecommerceinn.com",
+    advanceDays: 13,
+    bookingTime: "12:00 AM ET",
+    bookingTip:
+      "Reservations drop at midnight exactly, 13 days in advance on Resy — set an alarm. Walk-ins are always welcome and often the better play for brunch.",
+    walkInOption: "Walk-ins always welcome for both brunch and dinner",
+    phone: "(929) 302-6044",
+    michelinStar: false,
+    bibGourmand: true,
+    priceRange: "$$$",
+    imageUrl:
+      "https://images.unsplash.com/photo-1514190051997-0f6f39ca5cde?w=800&q=80",
+    imageCredit: "Unsplash",
+    tags: ["Brunch", "Tavern", "West Village", "Bib Gourmand", "Rita Sodi"],
+  },
 ];
