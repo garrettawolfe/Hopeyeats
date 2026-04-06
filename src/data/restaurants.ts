@@ -1251,10 +1251,10 @@ export const restaurants: Restaurant[] = [
     bookingTip:
       "Reservations drop at 9 AM, 14 days in advance on Resy. Open only three days a week — competition is fierce. Walk-ins possible but expect a long wait.",
     walkInOption: "Walk-ins accepted but expect a significant wait",
-    phone: null,
+    phone: "(646) 476-4457",
     michelinStar: false,
-    bibGourmand: false,
-    priceRange: "$$$",
+    bibGourmand: true,
+    priceRange: "$$",
     imageUrl:
       "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=800&q=80",
     imageCredit: "Unsplash",
