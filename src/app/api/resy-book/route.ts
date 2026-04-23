@@ -15,9 +15,11 @@ import { autoBook, autoBookWithRetry, getCachedAuth, setAuthFromToken, fetchExis
  * skipConflictCheck is true.
  */
 export async function POST(request: Request) {
+  const t0 = Date.now();
   try {
     const body = await request.json();
     const { configToken, date, partySize, restaurantName, time, slots, authToken, skipConflictCheck } = body;
+    console.log("[Book] START", { restaurant: restaurantName, date, time, slotPool: slots?.length ?? 0, partySize });
 
     // Try cached auth first; if unavailable, validate the token from request body
     let auth = getCachedAuth();
@@ -104,15 +106,17 @@ export async function POST(request: Request) {
     );
 
     if (!result.success) {
+      console.log("[Book] FAILED", { ms: Date.now() - t0, restaurant: restaurantName, date, time, error: result.error });
       return NextResponse.json(
         { error: result.error, ...result },
         { status: 422 },
       );
     }
 
+    console.log("[Book] SUCCESS", { ms: Date.now() - t0, restaurant: restaurantName, date, time });
     return NextResponse.json(result);
   } catch (err) {
-    console.error("[Book] Error:", err);
+    console.error("[Book] ERROR", { ms: Date.now() - t0, error: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Booking error" },
       { status: 500 },

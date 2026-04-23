@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
 import type { Restaurant } from "@/data/restaurants";
+import type { LogLevel } from "@/lib/logger";
 
 interface SnipeEvent {
   type: string;
@@ -30,6 +31,7 @@ interface Props {
   authToken?: string;
   partySize: number;
   onBooked?: (event: SnipeEvent) => void;
+  onLog?: (level: LogLevel, msg: string, data?: Record<string, unknown>) => void;
 }
 
 const TIME_OPTIONS = [
@@ -61,7 +63,7 @@ function getDropDate(restaurant: Restaurant): string | null {
 
 // Server-side scheduling via Upstash Redis + QStash
 
-export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, onBooked }: Props) {
+export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, onBooked, onLog }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [snipePartySize, setSnipePartySize] = useState(defaultPartySize);
   const [dates, setDates] = useState<string[]>(() => {
@@ -240,11 +242,25 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
             const event: SnipeEvent = JSON.parse(line);
             setEvents(prev => [...prev, event]);
 
-            if (event.type === "booked") {
+            if (event.type === "started") {
+              onLog?.("info", `Snipe started — targets: ${(event.targets as string[])?.join(", ")}`, { dates: event.dates });
+            } else if (event.type === "attempt") {
+              onLog?.("debug", `Snipe attempt #${event.attempt} (${Math.round(Number(event.elapsed) / 1000)}s elapsed)`);
+            } else if (event.type === "slots_found") {
+              onLog?.("info", `Slots found — ${event.restaurant} on ${event.date}: ${event.count} slots`, { bestTime: event.bestTime });
+            } else if (event.type === "booked") {
+              onLog?.("success", `BOOKED — ${event.restaurant} ${event.date} at ${event.time}`, { reservationId: event.reservationId });
               setResult("success");
               onBooked?.(event);
-            } else if (event.type === "done" && !event.booked) {
-              setResult("failed");
+            } else if (event.type === "book_failed") {
+              onLog?.("error", `Book failed — ${event.restaurant}: ${event.error}`, { error: event.error });
+            } else if (event.type === "error") {
+              onLog?.("error", `Snipe error: ${event.error}`);
+            } else if (event.type === "done") {
+              onLog?.(event.booked ? "success" : "info", `Snipe done`, { booked: event.booked, elapsed: event.elapsed });
+              if (!event.booked) setResult("failed");
+            } else if (event.type === "cancelled") {
+              onLog?.("warn", "Snipe cancelled by user");
             }
 
             setTimeout(() => {
@@ -256,8 +272,10 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         setEvents(prev => [...prev, { type: "cancelled" }]);
+        onLog?.("warn", "Snipe cancelled");
       } else {
         setEvents(prev => [...prev, { type: "error", error: String(err) }]);
+        onLog?.("error", `Snipe stream error: ${String(err)}`);
       }
       setResult("failed");
     } finally {

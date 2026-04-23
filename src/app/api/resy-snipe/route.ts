@@ -24,6 +24,7 @@ export const maxDuration = 120;
  * }
  */
 export async function POST(request: Request) {
+  const t0 = Date.now();
   try {
     const auth = getCachedAuth();
     const body = await request.json();
@@ -68,6 +69,8 @@ export async function POST(request: Request) {
     if (targets.length === 0 || dates.length === 0) {
       return NextResponse.json({ error: "No valid targets or dates" }, { status: 400 });
     }
+
+    console.log("[Snipe] START", { targets: targets.map(t => t.name), dates, partySize, windowSeconds: snipeWindowSeconds, times: preferredTimes });
 
     resetConsecutiveErrors();
 
@@ -209,11 +212,14 @@ export async function POST(request: Request) {
         }
       }
 
+      const elapsed = Date.now() - startTime;
+      console.log(`[Snipe] DONE`, { booked, attempts: attempt, ms: elapsed, dates: dates.length });
+
       await write({
         type: "done",
         booked,
         attempts: attempt,
-        elapsed: Date.now() - startTime,
+        elapsed,
         datesSearched: dates.length,
       });
 
@@ -226,6 +232,7 @@ export async function POST(request: Request) {
       headers: { "Content-Type": "application/x-ndjson" },
     });
   } catch (err) {
+    console.error("[Snipe] ERROR", { ms: Date.now() - t0, error: err instanceof Error ? err.message : String(err) });
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Snipe error" },
       { status: 500 },

@@ -20,7 +20,10 @@ import SettingsDrawer, {
 import RestaurantMonitorCard from "@/components/RestaurantMonitorCard";
 import LoginPage from "@/components/LoginPage";
 import SnipePanel from "@/components/SnipePanel";
+import DebugPanel from "@/components/DebugPanel";
 import { ToastProvider, useToast } from "@/components/Toast";
+import type { LogEntry, LogLevel } from "@/lib/logger";
+import { makeTs } from "@/lib/logger";
 
 const resyRestaurants = restaurants.filter(
   (r) =>
@@ -130,13 +133,26 @@ function HomeInner() {
   const [activePartySize, setActivePartySize] = useState<2 | 4>(4);
   const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
   const [appMode, setAppMode] = useState<"monitor" | "snipe">("monitor");
-  const [debugLog, setDebugLog] = useState<string[]>([]);
+  const [debugLog, setDebugLog] = useState<LogEntry[]>([]);
   const [showDebugLog, setShowDebugLog] = useState(false);
+  const [consecutiveFails, setConsecutiveFails] = useState(0);
 
-  const addLog = useCallback((msg: string) => {
-    const ts = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    setDebugLog((prev) => [`[${ts}] ${msg}`, ...prev].slice(0, 200));
+  const addLog = useCallback((level: LogLevel, module: string, msg: string, data?: Record<string, unknown>) => {
+    const ts = makeTs();
+    setDebugLog((prev) => [{ ts, level, module, msg, ...(data ? { data } : {}) }, ...prev].slice(0, 200));
   }, []);
+
+  // Global error capture
+  useEffect(() => {
+    const onError = (e: ErrorEvent) => addLog("error", "ui", e.message, { file: e.filename, line: e.lineno });
+    const onReject = (e: PromiseRejectionEvent) => addLog("error", "ui", `Unhandled rejection: ${String(e.reason)}`);
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onReject);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onReject);
+    };
+  }, [addLog]);
 
   // Refs for latest values (avoid stale closures)
   const settingsRef = useRef(settings);
@@ -199,13 +215,18 @@ function HomeInner() {
         .then((data) => {
           if (data.authenticated) {
             setResyAuth(data);
+            addLog("success", "auth", `Token restored — ${data.firstName ?? ""} ${data.lastName ?? ""}`.trim());
           } else {
             setSettings((prev) => prev ? { ...prev, resyAuthToken: "" } : prev);
             if (settings) saveSettings({ ...settings, resyAuthToken: "" });
             setResyAuth({ authenticated: false });
+            addLog("warn", "auth", "Saved token invalid — cleared");
           }
         })
-        .catch(() => setResyAuth({ authenticated: false }));
+        .catch(() => {
+          setResyAuth({ authenticated: false });
+          addLog("error", "auth", "Token restore failed — network error");
+        });
     } else {
       // No saved token — mark as unauthenticated without hitting the server
       setResyAuth({ authenticated: false });
@@ -273,7 +294,7 @@ function HomeInner() {
     for (const id of tier1) dateLimits[id] = 3;
     for (const id of tier2) dateLimits[id] = 3;
 
-    addLog(`Poll #${cycle} — ${tier1.length} priority + ${tier2.length} monitor = ${restaurantIds.length} restaurants`);
+    addLog("info", "poll", `Poll #${cycle} start — ${restaurantIds.length} restaurants`, { tier1: tier1.length, tier2: tier2.length });
 
     try {
       const controller = new AbortController();
@@ -395,7 +416,7 @@ function HomeInner() {
                             timestamp: new Date().toISOString(),
                           };
                           setBookingLog((prev) => [log, ...prev].slice(0, 50));
-                          addLog(`[ServerBook] ${event.restaurant} ${event.date} ${event.time}: ${event.success ? "SUCCESS" : `FAILED — ${event.error}`}`);
+                          addLog(event.success ? "success" : "error", "book", `AutoBook ${event.success ? "booked" : "failed"} — ${event.restaurant} ${event.date} ${event.time}`, event.success ? undefined : { error: event.error });
                           if (event.success) {
                             addToast(`Auto-booked ${event.restaurant} — ${event.date} at ${event.time}`, "success", 8000);
                           } else {
@@ -417,16 +438,21 @@ function HomeInner() {
               const had200s = result.diagnostics?.includes("200:") ?? false;
               if (had200s) {
                 consecutiveFailsRef.current = 0;
+                setConsecutiveFails(0);
               } else if (result.diffs.length > 0) {
                 consecutiveFailsRef.current++;
+                setConsecutiveFails(consecutiveFailsRef.current);
                 if (consecutiveFailsRef.current > 1) {
-                  addLog(`WAF blocked — backing off (${consecutiveFailsRef.current} consecutive failures)`);
+                  addLog("warn", "poll", `WAF blocked — backing off`, { fails: consecutiveFailsRef.current });
                 }
               }
 
-              addLog(`Poll done — ${result.diffs.length} checked, ${totalSlots} slots, ${totalNew} new. baseline=${result.isBaseline}${withSlots.length > 0 ? `. Avail: ${withSlots.join(", ")}` : ""}`);
+              addLog("info", "poll", `Poll #${cycle} done — ${result.diffs.length} checked, ${totalSlots} slots, ${totalNew} new`, {
+                baseline: result.isBaseline,
+                avail: withSlots.length > 0 ? withSlots : undefined,
+              });
               if (result.diagnostics) {
-                addLog(`Diagnostics: ${result.diagnostics}`);
+                addLog("debug", "poll", `Diagnostics: ${result.diagnostics}`);
               }
 
               if (result.isBaseline) {
@@ -456,9 +482,9 @@ function HomeInner() {
       // Client just handles "booking" events from the NDJSON stream above
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
-        addLog("Poll timed out — will retry next cycle");
+        addLog("warn", "poll", "Poll timed out — will retry next cycle");
       } else {
-        addLog(`Poll error: ${err instanceof Error ? err.message : String(err)}`);
+        addLog("error", "poll", "Poll error", { error: err instanceof Error ? err.message : String(err) });
         console.error("[WolfePack] Poll error:", err);
       }
     } finally {
@@ -583,9 +609,15 @@ function HomeInner() {
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
-      if (data.authenticated) { setResyAuth(data); return true; }
+      if (data.authenticated) {
+        setResyAuth(data);
+        addLog("success", "auth", `Email login — ${data.firstName ?? ""} ${data.lastName ?? ""}`.trim());
+        return true;
+      }
+      addLog("error", "auth", `Email login failed — ${data.error ?? "unknown"}`);
       return data.error || "Login failed";
     } catch (err) {
+      addLog("error", "auth", "Email login error", { error: err instanceof Error ? err.message : String(err) });
       return err instanceof Error ? err.message : "Network error";
     }
   };
@@ -598,9 +630,15 @@ function HomeInner() {
         body: JSON.stringify({ authToken: token }),
       });
       const data = await res.json();
-      if (data.authenticated) { setResyAuth(data); return true; }
+      if (data.authenticated) {
+        setResyAuth(data);
+        addLog("success", "auth", `Token auth — ${data.firstName ?? ""} ${data.lastName ?? ""}`.trim());
+        return true;
+      }
+      addLog("error", "auth", `Token auth failed — ${data.error ?? "unknown"}`);
       return data.error || "Token validation failed";
     } catch (err) {
+      addLog("error", "auth", "Token auth error", { error: err instanceof Error ? err.message : String(err) });
       return err instanceof Error ? err.message : "Network error";
     }
   };
@@ -612,6 +650,7 @@ function HomeInner() {
       body: JSON.stringify({ action: "logout" }),
     });
     setResyAuth({ authenticated: false });
+    addLog("info", "auth", "Logged out");
   };
 
   const handleSwitchProfile = (name: string) => {
@@ -883,42 +922,33 @@ function HomeInner() {
 
         {/* Debug Log */}
         <div className="mb-4">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowDebugLog(!showDebugLog)}
-              className="text-xs text-stone-400 hover:text-stone-600 transition-colors flex items-center gap-1"
-            >
-              {showDebugLog ? "▼" : "▶"} Debug Log ({debugLog.length})
-            </button>
-            {showDebugLog && debugLog.length > 0 && (
-              <>
-                <button
-                  onClick={() => { navigator.clipboard.writeText(debugLog.join("\n")); }}
-                  className="text-[10px] px-2 py-0.5 bg-stone-700 text-stone-300 rounded hover:bg-stone-600 transition-colors"
-                >
-                  Copy
-                </button>
-                <button
-                  onClick={() => setDebugLog([])}
-                  className="text-[10px] px-2 py-0.5 bg-stone-700 text-stone-300 rounded hover:bg-red-700 transition-colors"
-                >
-                  Clear
-                </button>
-              </>
+          <button
+            onClick={() => setShowDebugLog(!showDebugLog)}
+            className="text-xs text-stone-400 hover:text-stone-600 transition-colors flex items-center gap-1 mb-2"
+          >
+            {showDebugLog ? "▼" : "▶"} Debug Log ({debugLog.length})
+            {debugLog.filter(e => e.level === "error").length > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 bg-red-900 text-red-300 rounded text-[9px] font-medium">
+                {debugLog.filter(e => e.level === "error").length} errors
+              </span>
             )}
-          </div>
+          </button>
           {showDebugLog && (
-            <div className="mt-2 bg-stone-900 text-stone-300 rounded-xl p-3 max-h-48 overflow-y-auto font-mono text-[10px] leading-relaxed select-all">
-              {debugLog.length === 0 ? (
-                <span className="text-stone-500">No logs yet — waiting for first poll...</span>
-              ) : (
-                debugLog.map((line, i) => (
-                  <div key={i} className={line.includes("SUCCESS") ? "text-emerald-400" : line.includes("FAILED") || line.includes("EXCEPTION") ? "text-red-400" : "text-stone-300"}>
-                    {line}
-                  </div>
-                ))
-              )}
-            </div>
+            <DebugPanel
+              entries={debugLog}
+              onClear={() => setDebugLog([])}
+              resyAuth={resyAuth}
+              profile={activeProfileName}
+              partySize={settings?.partySize ?? 2}
+              monitoredCount={monitoredIds.size}
+              monitoredNames={resyRestaurants.filter(r => monitoredIds.has(r.id)).map(r => r.name)}
+              autoBookNames={resyRestaurants.filter(r => autoBookIds.has(r.id)).map(r => r.name)}
+              pollCount={pollCount}
+              lastPollTime={lastPollTime}
+              isPolling={isPolling}
+              preferredDays={settings?.preferredDays ?? []}
+              consecutiveFails={consecutiveFails}
+            />
           )}
         </div>
 
@@ -963,6 +993,7 @@ function HomeInner() {
               isAuthenticated={resyAuth?.authenticated ?? false}
               authToken={resyAuth?.authToken}
               partySize={settings.partySize ?? 2}
+              onLog={(level, msg, data) => addLog(level, "snipe", msg, data)}
               onBooked={(event) => {
                 addToast(`Sniped! ${event.restaurant} at ${event.time} on ${event.date}`, "success", 10000);
                 setBookingLog((prev) => [{
