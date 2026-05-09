@@ -48,6 +48,7 @@ export const SMS_GATEWAYS: Record<string, string> = {
 
 export function buildSmsEmail(phone: string, carrier: string): string {
   const digits = phone.replace(/\D/g, "");
+  if (!digits) return "";
   const gateway = SMS_GATEWAYS[carrier.toLowerCase()];
   if (!gateway) return "";
   return `${digits}@${gateway}`;
