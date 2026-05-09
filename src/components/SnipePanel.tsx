@@ -245,7 +245,9 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
             if (event.type === "started") {
               onLog?.("info", `Snipe started — targets: ${(event.targets as string[])?.join(", ")}`, { dates: event.dates });
             } else if (event.type === "attempt") {
-              onLog?.("debug", `Snipe attempt #${event.attempt} (${Math.round(Number(event.elapsed) / 1000)}s elapsed)`);
+              if (Number(event.attempt) % 5 === 1) {
+                onLog?.("debug", `Snipe attempt #${event.attempt} (${Math.round(Number(event.elapsed) / 1000)}s elapsed)`);
+              }
             } else if (event.type === "slots_found") {
               onLog?.("info", `Slots found — ${event.restaurant} on ${event.date}: ${event.count} slots`, { bestTime: event.bestTime });
             } else if (event.type === "booked") {
@@ -259,8 +261,6 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
             } else if (event.type === "done") {
               onLog?.(event.booked ? "success" : "info", `Snipe done`, { booked: event.booked, elapsed: event.elapsed });
               if (!event.booked) setResult("failed");
-            } else if (event.type === "cancelled") {
-              onLog?.("warn", "Snipe cancelled by user");
             }
 
             setTimeout(() => {
@@ -272,7 +272,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         setEvents(prev => [...prev, { type: "cancelled" }]);
-        onLog?.("warn", "Snipe cancelled");
+        onLog?.("warn", "Snipe cancelled by user");
       } else {
         setEvents(prev => [...prev, { type: "error", error: String(err) }]);
         onLog?.("error", `Snipe stream error: ${String(err)}`);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { restaurants } from "@/data/restaurants";
 import type { AvailabilitySlot } from "@/lib/resyApi";
 import type { MonitorPollResult } from "@/lib/resyMonitor";
@@ -437,8 +437,10 @@ function HomeInner() {
               // Parse diagnostics string for 200 status count (format: "statuses={200:N,...}")
               const had200s = result.diagnostics?.includes("200:") ?? false;
               if (had200s) {
-                consecutiveFailsRef.current = 0;
-                setConsecutiveFails(0);
+                if (consecutiveFailsRef.current !== 0) {
+                  consecutiveFailsRef.current = 0;
+                  setConsecutiveFails(0);
+                }
               } else if (result.diffs.length > 0) {
                 consecutiveFailsRef.current++;
                 setConsecutiveFails(consecutiveFailsRef.current);
@@ -688,7 +690,20 @@ function HomeInner() {
     handleSwitchProfile(remaining.length > 0 ? remaining[0] : "Default");
   };
 
-  // --- Computed values ---
+  // --- Memoized derived values ---
+
+  const debugErrorCount = useMemo(
+    () => debugLog.filter((e) => e.level === "error").length,
+    [debugLog],
+  );
+  const monitoredNames = useMemo(
+    () => resyRestaurants.filter((r) => monitoredIds.has(r.id)).map((r) => r.name),
+    [monitoredIds],
+  );
+  const autoBookNames = useMemo(
+    () => resyRestaurants.filter((r) => autoBookIds.has(r.id)).map((r) => r.name),
+    [autoBookIds],
+  );
 
   const getFilteredSlots = useCallback(
     (restaurantId: string): AvailabilitySlot[] => {
@@ -927,9 +942,9 @@ function HomeInner() {
             className="text-xs text-stone-400 hover:text-stone-600 transition-colors flex items-center gap-1 mb-2"
           >
             {showDebugLog ? "▼" : "▶"} Debug Log ({debugLog.length})
-            {debugLog.filter(e => e.level === "error").length > 0 && (
+            {debugErrorCount > 0 && (
               <span className="ml-1 px-1.5 py-0.5 bg-red-900 text-red-300 rounded text-[9px] font-medium">
-                {debugLog.filter(e => e.level === "error").length} errors
+                {debugErrorCount} errors
               </span>
             )}
           </button>
@@ -941,8 +956,8 @@ function HomeInner() {
               profile={activeProfileName}
               partySize={settings?.partySize ?? 2}
               monitoredCount={monitoredIds.size}
-              monitoredNames={resyRestaurants.filter(r => monitoredIds.has(r.id)).map(r => r.name)}
-              autoBookNames={resyRestaurants.filter(r => autoBookIds.has(r.id)).map(r => r.name)}
+              monitoredNames={monitoredNames}
+              autoBookNames={autoBookNames}
               pollCount={pollCount}
               lastPollTime={lastPollTime}
               isPolling={isPolling}

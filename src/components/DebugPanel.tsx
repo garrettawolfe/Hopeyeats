@@ -23,7 +23,7 @@ interface DebugPanelProps {
 const ALL_LEVELS: (LogLevel | "all")[] = ["all", "debug", "info", "warn", "error", "success"];
 const ALL_MODULES = ["all", "poll", "snipe", "auth", "book", "email", "ui"];
 
-const LEVEL_COLORS: Record<LogLevel, string> = {
+const LEVEL_TEXT: Record<LogLevel, string> = {
   debug: "text-stone-400",
   info: "text-sky-300",
   warn: "text-amber-400",
@@ -39,10 +39,6 @@ const LEVEL_PILL_ACTIVE: Record<LogLevel | "all", string> = {
   error: "bg-red-700 text-white",
   success: "bg-emerald-700 text-white",
 };
-
-function levelColor(level: LogLevel): string {
-  return LEVEL_COLORS[level] ?? "text-stone-300";
-}
 
 export default function DebugPanel({
   entries,
@@ -63,17 +59,20 @@ export default function DebugPanel({
   const [moduleFilter, setModuleFilter] = useState<string>("all");
   const [copied, setCopied] = useState(false);
 
-  const filtered = useMemo(
-    () =>
-      entries.filter(
-        (e) =>
-          (levelFilter === "all" || e.level === levelFilter) &&
-          (moduleFilter === "all" || e.module === moduleFilter),
-      ),
-    [entries, levelFilter, moduleFilter],
-  );
-
-  const errorCount = useMemo(() => entries.filter((e) => e.level === "error").length, [entries]);
+  const { filtered, errorCount } = useMemo(() => {
+    let ec = 0;
+    const f: LogEntry[] = [];
+    for (const e of entries) {
+      if (e.level === "error") ec++;
+      if (
+        (levelFilter === "all" || e.level === levelFilter) &&
+        (moduleFilter === "all" || e.module === moduleFilter)
+      ) {
+        f.push(e);
+      }
+    }
+    return { filtered: f, errorCount: ec };
+  }, [entries, levelFilter, moduleFilter]);
 
   const lastPollStr = lastPollTime
     ? new Date(lastPollTime).toLocaleTimeString("en-US", { hour12: false })
@@ -257,7 +256,7 @@ export default function DebugPanel({
           </span>
         ) : (
           filtered.map((entry, i) => (
-            <div key={i} className={levelColor(entry.level)}>
+            <div key={i} className={LEVEL_TEXT[entry.level] ?? "text-stone-300"}>
               {formatEntry(entry)}
             </div>
           ))
