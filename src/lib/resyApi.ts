@@ -512,6 +512,7 @@ export async function findAvailability(
   date: string,
   partySize: number = 2,
   authToken?: string,
+  venueName?: string,
 ): Promise<ResyFindResponse | null> {
   if (isBackedOff()) {
     const waitMs = rateLimitState.backoffUntil - Date.now();
@@ -564,16 +565,19 @@ export async function findAvailability(
   // Track status codes
   rateLimitState.pollStatusCounts[response.status] = (rateLimitState.pollStatusCounts[response.status] ?? 0) + 1;
 
+  const venueLabel = venueName ? `${venueId} (${venueName})` : String(venueId);
+
   // Log first 2 requests per poll to diagnose issues
   if (rateLimitState.pollRequestCount <= 2) {
-    console.log(`[Resy] /4/find ${response.status} venue=${venueId} date=${date}`);
+    console.log(`[Resy] /4/find ${response.status} venue=${venueLabel} date=${date}`);
   }
 
   if (response.status === 500) {
     if (rateLimitState.pollFirst500Body === null) {
       const respBody = await response.text().catch(() => "");
       rateLimitState.pollFirst500Body = respBody.slice(0, 500);
-      console.log(`[Resy] First 500 body (venue=${venueId}, date=${date}): "${rateLimitState.pollFirst500Body}"`);
+      const bodyNote = rateLimitState.pollFirst500Body ? `body="${rateLimitState.pollFirst500Body}"` : "empty body — WAF block";
+      console.log(`[Resy] First 500 venue=${venueLabel} date=${date}: ${bodyNote}`);
     }
     return null;
   }
@@ -803,7 +807,7 @@ export async function checkVenueAvailability(
     const results = await Promise.all(
       batch.map(async (date) => {
         try {
-          const response = await findAvailability(venueId, date, partySize, authToken);
+          const response = await findAvailability(venueId, date, partySize, authToken, venueName);
           if (response) {
             rateLimitState.consecutiveErrors = 0;
             return parseSlots(response, venueId, venueName, resyBaseUrl, partySize);

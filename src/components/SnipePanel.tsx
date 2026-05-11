@@ -117,6 +117,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
   const [showScheduler, setShowScheduler] = useState(false);
   const [scheduleDropTime, setScheduleDropTime] = useState("09:00");
   const [schedulingInProgress, setSchedulingInProgress] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Auto-derive preferred dinner times from settings windows when dates change
   useEffect(() => {
@@ -131,6 +132,20 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     const r = restaurants.find(x => x.id === Array.from(selectedIds)[0]);
     const parsed = parseBookingTimeTo24(r?.bookingTime);
     if (parsed) setScheduleDropTime(parsed);
+  }, [selectedIds, restaurants]);
+
+  // Auto-fill target dates from booking windows when restaurants are first selected
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    setDates(prev => {
+      if (prev.length > 0) return prev;
+      const drops = new Set<string>();
+      for (const id of selectedIds) {
+        const r = restaurants.find(x => x.id === id);
+        if (r) { const dd = getDropDate(r); if (dd) drops.add(dd); }
+      }
+      return drops.size > 0 ? Array.from(drops).sort() : prev;
+    });
   }, [selectedIds, restaurants]);
 
   // Fetch scheduled snipes from server on mount + periodically
@@ -377,93 +392,83 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
   };
 
   const resyRestaurants = restaurants.filter(r => r.resyVenueId);
+  const canLaunch = isAuthenticated && selectedIds.size > 0 && selectedTimes.size > 0 && dates.length > 0;
+  const firstSelected = restaurants.find(r => selectedIds.has(r.id));
+  const launchLabel = (() => {
+    if (selectedIds.size === 0) return "Select a restaurant above";
+    if (dates.length === 0) return "Select a target date above";
+    const name = firstSelected?.name ?? "";
+    const extra = selectedIds.size > 1 ? ` +${selectedIds.size - 1}` : "";
+    const dateStr = dates.length === 1 ? formatDateShort(dates[0]) : `${dates.length} dates`;
+    return `Snipe Now — ${name}${extra}, ${dateStr}`;
+  })();
 
-  // Build drop info for selected restaurants
-  const selectedRestaurantInfo = restaurants.filter(r => selectedIds.has(r.id));
-  const dropInfoItems = selectedRestaurantInfo
-    .filter(r => r.bookingTime || r.advanceDays)
-    .map(r => ({
-      name: r.name,
-      advanceDays: r.advanceDays,
-      bookingTime: r.bookingTime,
-      dropDate: getDropDate(r),
-    }));
+  const sel = (active: boolean) =>
+    `w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border-2 text-left transition-all ${
+      active ? "border-charcoal bg-charcoal text-white" : "border-stone-100 bg-stone-50 text-charcoal hover:border-stone-300 hover:bg-white"
+    }`;
 
   return (
     <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden">
-      <div className="p-4 space-y-4">
+      <div className="p-4 space-y-5">
+
+        {/* Header */}
         <div className="flex items-center justify-between">
-          <h2 className="font-serif text-lg text-charcoal">Snipe Mode</h2>
-          <div className="flex items-center gap-2">
-            {!isAuthenticated && (
-              <span className="text-xs text-red-500 bg-red-50 px-2 py-1 rounded-full">Auth required</span>
+          <div>
+            <h2 className="font-serif text-lg text-charcoal">Snipe Mode</h2>
+            <p className="text-xs text-stone-400 mt-0.5">Grabs a slot the moment it opens on Resy</p>
+          </div>
+          {!isAuthenticated && (
+            <span className="text-xs text-red-500 bg-red-50 px-2 py-1 rounded-full border border-red-100">Auth required</span>
+          )}
+        </div>
+
+        {/* Step 1: Restaurant */}
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-5 h-5 rounded-full bg-charcoal text-white text-[10px] flex items-center justify-center font-bold shrink-0">1</span>
+            <span className="text-sm font-semibold text-charcoal">
+              Which restaurant?
+              {selectedIds.size > 0 && <span className="ml-1.5 text-xs font-normal text-stone-400">{selectedIds.size} selected</span>}
+            </span>
+            {selectedIds.size > 0 && (
+              <button onClick={clearAllRestaurants} disabled={isRunning} className="ml-auto text-[10px] text-stone-400 hover:text-stone-600 underline">Clear</button>
             )}
           </div>
+          <div className="space-y-1.5 max-h-56 overflow-y-auto pr-0.5">
+            {resyRestaurants.map(r => {
+              const isSelected = selectedIds.has(r.id);
+              const dropDate = getDropDate(r);
+              return (
+                <button key={r.id} onClick={() => toggleRestaurant(r.id)} disabled={isRunning} className={sel(isSelected)}>
+                  <span className="font-medium text-sm truncate">{r.name}</span>
+                  <div className="text-right shrink-0 ml-3 leading-tight">
+                    <div className={`text-[11px] ${isSelected ? "text-white/60" : "text-stone-400"}`}>
+                      {r.bookingTime ? `${r.advanceDays}d @ ${r.bookingTime}` : r.advanceDays ? `${r.advanceDays}d rolling` : ""}
+                    </div>
+                    {dropDate && (
+                      <div className={`text-[11px] font-semibold ${isSelected ? "text-white" : "text-amber-600"}`}>
+                        next: {formatDateShort(dropDate)}
+                      </div>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
-        {/* Restaurant Selection */}
+        {/* Step 2: Target date */}
         <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <label className="text-xs text-stone-500 font-medium">Target Restaurants ({selectedIds.size})</label>
-            <div className="flex gap-2">
-              <button onClick={selectAllRestaurants} disabled={isRunning} className="text-[10px] text-stone-400 hover:text-stone-600 underline">All</button>
-              <button onClick={clearAllRestaurants} disabled={isRunning} className="text-[10px] text-stone-400 hover:text-stone-600 underline">Clear</button>
-            </div>
-          </div>
-          <div className="max-h-40 overflow-y-auto border border-stone-200 rounded-lg p-2 space-y-0.5">
-            {resyRestaurants.map(r => (
-              <label
-                key={r.id}
-                className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-sm transition-colors ${
-                  selectedIds.has(r.id) ? "bg-gold/10 text-charcoal" : "text-stone-500 hover:bg-stone-50"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedIds.has(r.id)}
-                  onChange={() => toggleRestaurant(r.id)}
-                  disabled={isRunning}
-                  className="rounded border-stone-300 text-charcoal focus:ring-gold"
-                />
-                <span className="truncate">{r.name}</span>
-                <span className="text-[10px] text-stone-400 ml-auto shrink-0">
-                  {r.bookingTime ? `${r.advanceDays}d @ ${r.bookingTime}` : `${r.advanceDays}d rolling`}
-                </span>
-              </label>
-            ))}
-          </div>
-        </div>
-
-        {/* Drop Time Info (when restaurants are selected) */}
-        {dropInfoItems.length > 0 && (
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xs font-semibold text-amber-800">Reservation Drop Schedule</h3>
-              <button
-                onClick={autoFillDropDates}
-                disabled={isRunning}
-                className="text-[10px] bg-amber-200 text-amber-800 px-2 py-0.5 rounded-full hover:bg-amber-300 transition-colors font-medium"
-              >
-                Auto-fill drop dates
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-5 h-5 rounded-full bg-charcoal text-white text-[10px] flex items-center justify-center font-bold shrink-0">2</span>
+            <span className="text-sm font-semibold text-charcoal">Target dining date</span>
+            {selectedIds.size > 0 && dates.length === 0 && (
+              <button onClick={autoFillDropDates} disabled={isRunning} className="ml-auto text-[11px] text-amber-600 hover:text-amber-800 font-medium underline">
+                Auto-fill from booking window
               </button>
-            </div>
-            <div className="space-y-1">
-              {dropInfoItems.map(item => (
-                <div key={item.name} className="flex items-center justify-between text-xs">
-                  <span className="text-amber-700 truncate">{item.name}</span>
-                  <span className="text-amber-600 shrink-0 ml-2">
-                    {item.bookingTime ?? "Rolling"} &middot; {item.advanceDays}d ahead
-                    {item.dropDate && <span className="text-amber-800 font-medium"> &middot; next: {formatDateShort(item.dropDate)}</span>}
-                  </span>
-                </div>
-              ))}
-            </div>
+            )}
           </div>
-        )}
-
-        {/* Multi-Date Picker */}
-        <div>
-          <label className="block text-xs text-stone-500 font-medium mb-1.5">Target Dates ({dates.length})</label>
           <div className="flex gap-2 mb-2">
             <input
               type="date"
@@ -473,104 +478,34 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               className="flex-1 px-3 py-2 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
               disabled={isRunning}
             />
-            <button
-              onClick={() => addDate(dateInput)}
-              disabled={isRunning || !dateInput}
-              className="px-3 py-2 bg-charcoal text-white rounded-lg text-sm font-medium hover:bg-charcoal/90 transition-colors disabled:opacity-40"
-            >
+            <button onClick={() => addDate(dateInput)} disabled={isRunning || !dateInput}
+              className="px-3 py-2 bg-charcoal text-white rounded-lg text-sm font-medium hover:bg-charcoal/90 disabled:opacity-40">
               Add
             </button>
           </div>
           {dates.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {dates.map(d => (
-                <span
-                  key={d}
-                  className="inline-flex items-center gap-1 bg-stone-100 text-stone-700 px-2.5 py-1 rounded-lg text-xs"
-                >
+                <span key={d} className="inline-flex items-center gap-1 bg-stone-100 text-stone-700 px-2.5 py-1 rounded-lg text-xs">
                   {formatDateShort(d)}
-                  <button
-                    onClick={() => removeDate(d)}
-                    disabled={isRunning}
-                    className="text-stone-400 hover:text-stone-600 ml-0.5"
-                  >
-                    &times;
-                  </button>
+                  <button onClick={() => removeDate(d)} disabled={isRunning} className="text-stone-400 hover:text-stone-600">&times;</button>
                 </span>
               ))}
               {dates.length > 1 && (
-                <button
-                  onClick={() => setDates([])}
-                  disabled={isRunning}
-                  className="text-[10px] text-stone-400 hover:text-stone-600 underline px-1"
-                >
-                  Clear all
-                </button>
+                <button onClick={() => setDates([])} disabled={isRunning} className="text-[10px] text-stone-400 hover:text-stone-600 underline px-1">Clear all</button>
               )}
             </div>
           )}
         </div>
 
-        {/* Config Row */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          <div>
-            <label className="block text-xs text-stone-500 mb-1">Flexibility</label>
-            <select
-              value={timeRadius}
-              onChange={(e) => setTimeRadius(Number(e.target.value))}
-              className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
-              disabled={isRunning}
-            >
-              <option value={15}>&plusmn;15 min</option>
-              <option value={30}>&plusmn;30 min</option>
-              <option value={60}>&plusmn;60 min</option>
-              <option value={120}>&plusmn;2 hrs</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs text-stone-500 mb-1">Snipe Window</label>
-            <select
-              value={snipeWindow}
-              onChange={(e) => setSnipeWindow(Number(e.target.value))}
-              className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
-              disabled={isRunning}
-            >
-              <option value={15}>15 sec</option>
-              <option value={30}>30 sec</option>
-              <option value={60}>60 sec</option>
-              <option value={120}>2 min</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs text-stone-500 mb-1">Party Size</label>
-            <div className="flex gap-1">
-              {([2, 4] as const).map(size => (
-                <button
-                  key={size}
-                  onClick={() => setSnipePartySize(size)}
-                  disabled={isRunning}
-                  className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    snipePartySize === size
-                      ? "bg-charcoal text-white"
-                      : "bg-stone-100 text-stone-500 hover:bg-stone-200"
-                  }`}
-                >
-                  {size}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Preferred Times */}
+        {/* Step 3: Dining times */}
         <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <label className="text-xs text-stone-500 font-medium">
-              Preferred Times
-              {!timesCustomized && dayTimeWindows && selectedTimes.size > 0 && (
-                <span className="ml-1.5 text-[10px] text-amber-600 font-normal">from settings</span>
-              )}
-            </label>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-5 h-5 rounded-full bg-charcoal text-white text-[10px] flex items-center justify-center font-bold shrink-0">3</span>
+            <span className="text-sm font-semibold text-charcoal">Dining times</span>
+            {!timesCustomized && dayTimeWindows && selectedTimes.size > 0 && (
+              <span className="text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full">from settings</span>
+            )}
             <button
               onClick={() => {
                 if (timesCustomized && dayTimeWindows) {
@@ -580,7 +515,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
                 setTimesCustomized(v => !v);
               }}
               disabled={isRunning}
-              className="text-[10px] text-stone-400 hover:text-stone-600 underline"
+              className="ml-auto text-[10px] text-stone-400 hover:text-stone-600 underline"
             >
               {timesCustomized ? "Reset to settings" : "Customize"}
             </button>
@@ -588,16 +523,10 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           {timesCustomized ? (
             <div className="flex flex-wrap gap-1.5">
               {TIME_OPTIONS.map(t => (
-                <button
-                  key={t}
-                  onClick={() => toggleTime(t)}
-                  disabled={isRunning}
+                <button key={t} onClick={() => toggleTime(t)} disabled={isRunning}
                   className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    selectedTimes.has(t)
-                      ? "bg-charcoal text-white"
-                      : "bg-stone-100 text-stone-500 hover:bg-stone-200"
-                  }`}
-                >
+                    selectedTimes.has(t) ? "bg-charcoal text-white" : "bg-stone-100 text-stone-500 hover:bg-stone-200"
+                  }`}>
                   {formatTime12(t)}
                 </button>
               ))}
@@ -605,81 +534,105 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {Array.from(selectedTimes).sort().map(t => (
-                <span key={t} className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-charcoal text-white">
-                  {formatTime12(t)}
-                </span>
+                <span key={t} className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-stone-800 text-white">{formatTime12(t)}</span>
               ))}
               {selectedTimes.size === 0 && (
-                <span className="text-xs text-stone-400">No times — add target dates or customize</span>
+                <span className="text-xs text-stone-400">Select dates first, or customize</span>
               )}
             </div>
           )}
         </div>
 
-        {/* Action Buttons */}
-        <div className="flex gap-2">
-          {!isRunning ? (
-            <>
-              <button
-                onClick={launchSnipe}
-                disabled={!isAuthenticated || selectedIds.size === 0 || selectedTimes.size === 0 || dates.length === 0}
-                className="flex-1 py-3 bg-charcoal text-white rounded-xl text-sm font-semibold hover:bg-charcoal/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Launch Now ({selectedIds.size} restaurant{selectedIds.size !== 1 ? "s" : ""}, {dates.length} date{dates.length !== 1 ? "s" : ""})
-              </button>
-              <button
-                onClick={() => setShowScheduler(!showScheduler)}
-                disabled={!isAuthenticated || selectedIds.size === 0 || selectedTimes.size === 0 || dates.length === 0}
-                className="px-4 py-3 border-2 border-charcoal text-charcoal rounded-xl text-sm font-semibold hover:bg-stone-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                title="Schedule snipe for a specific drop time"
-              >
-                Schedule
-              </button>
-            </>
-          ) : (
-            <button
-              onClick={cancelSnipe}
-              className="flex-1 py-3 bg-red-600 text-white rounded-xl text-sm font-semibold hover:bg-red-700 transition-colors"
-            >
-              Cancel Snipe
+        {/* Party size + Advanced toggle */}
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-stone-500 font-medium">Party:</span>
+          {([2, 4] as const).map(size => (
+            <button key={size} onClick={() => setSnipePartySize(size)} disabled={isRunning}
+              className={`w-9 h-9 rounded-lg text-sm font-semibold transition-colors ${
+                snipePartySize === size ? "bg-charcoal text-white" : "bg-stone-100 text-stone-500 hover:bg-stone-200"
+              }`}>
+              {size}
             </button>
-          )}
+          ))}
+          <button onClick={() => setShowAdvanced(v => !v)} className="ml-auto text-[10px] text-stone-400 hover:text-stone-600 underline">
+            {showAdvanced ? "Hide advanced" : "Advanced options"}
+          </button>
         </div>
 
-        {/* Schedule Picker */}
-        {showScheduler && (
-          <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 space-y-3">
-            <h3 className="text-sm font-semibold text-blue-800">Schedule Snipe</h3>
-            <p className="text-xs text-blue-600">
-              Auto-launch this snipe at a specific time (ET). Runs server-side via Upstash QStash — no need to keep your browser open.
+        {/* Advanced options */}
+        {showAdvanced && (
+          <div className="grid grid-cols-2 gap-3 bg-stone-50 border border-stone-100 rounded-xl p-3">
+            <div>
+              <label className="block text-xs text-stone-500 mb-1">Time flexibility</label>
+              <select value={timeRadius} onChange={(e) => setTimeRadius(Number(e.target.value))} disabled={isRunning}
+                className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
+                <option value={15}>±15 min</option>
+                <option value={30}>±30 min</option>
+                <option value={60}>±60 min</option>
+                <option value={120}>±2 hrs</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-stone-500 mb-1">Snipe window</label>
+              <select value={snipeWindow} onChange={(e) => setSnipeWindow(Number(e.target.value))} disabled={isRunning}
+                className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
+                <option value={15}>15 sec</option>
+                <option value={30}>30 sec</option>
+                <option value={60}>60 sec</option>
+                <option value={120}>2 min</option>
+              </select>
+            </div>
+          </div>
+        )}
+
+        {/* Action buttons */}
+        {!isRunning ? (
+          <div className="space-y-2">
+            <button onClick={launchSnipe} disabled={!canLaunch}
+              className="w-full py-3.5 bg-charcoal text-white rounded-xl text-sm font-semibold hover:bg-charcoal/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+              {launchLabel}
+            </button>
+            {canLaunch && (
+              <button onClick={() => setShowScheduler(v => !v)}
+                className="w-full py-2.5 border border-stone-200 text-stone-600 rounded-xl text-sm font-medium hover:bg-stone-50 transition-colors">
+                {showScheduler ? "Cancel" : `Schedule for ${formatTime12(scheduleDropTime)} ET`}
+              </button>
+            )}
+          </div>
+        ) : (
+          <button onClick={cancelSnipe}
+            className="w-full py-3.5 bg-red-600 text-white rounded-xl text-sm font-semibold hover:bg-red-700 transition-colors">
+            Cancel Snipe
+          </button>
+        )}
+
+        {/* Schedule confirm */}
+        {showScheduler && !isRunning && (
+          <div className="bg-stone-50 border border-stone-200 rounded-xl p-3 space-y-2">
+            <p className="text-xs text-stone-500">
+              Auto-fires at the configured drop time — runs server-side, no need to keep the browser open.
             </p>
-            <div className="flex items-center gap-3">
-              <label className="text-xs text-blue-700">Drop time (ET):</label>
-              <select
-                value={scheduleDropTime}
-                onChange={(e) => setScheduleDropTime(e.target.value)}
-                className="px-3 py-2 border border-blue-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 bg-white"
-              >
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-stone-600">Drop time (ET):</span>
+              <select value={scheduleDropTime} onChange={(e) => setScheduleDropTime(e.target.value)}
+                className="px-3 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
                 {[...new Set([...DROP_TIME_OPTIONS, scheduleDropTime])].sort().map(t => (
                   <option key={t} value={t}>{formatTime12(t)} ET</option>
                 ))}
               </select>
-              <button
-                onClick={scheduleSnipe}
-                disabled={schedulingInProgress || !authToken}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
-              >
-                {schedulingInProgress ? "Scheduling..." : "Confirm Schedule"}
+              <button onClick={scheduleSnipe} disabled={schedulingInProgress || !authToken}
+                className="ml-auto px-4 py-1.5 bg-charcoal text-white rounded-lg text-sm font-medium hover:bg-charcoal/90 disabled:opacity-50">
+                {schedulingInProgress ? "Scheduling..." : "Confirm"}
               </button>
             </div>
           </div>
         )}
 
-        {/* Scheduled Snipes List */}
+        {/* Scheduled snipes list */}
         {scheduledSnipes.length > 0 && (
           <div className="border border-stone-200 rounded-xl overflow-hidden">
             <div className="bg-stone-50 px-3 py-2 border-b border-stone-200">
-              <h3 className="text-xs font-semibold text-stone-600">Scheduled Snipes</h3>
+              <h3 className="text-xs font-semibold text-stone-600">Scheduled ({scheduledSnipes.length})</h3>
             </div>
             <div className="divide-y divide-stone-100">
               {scheduledSnipes.map(snipe => (
@@ -687,8 +640,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
                   <span className={`w-2 h-2 rounded-full shrink-0 ${
                     snipe.status === "waiting" ? "bg-blue-400 animate-pulse" :
                     snipe.status === "running" ? "bg-amber-400 animate-pulse" :
-                    snipe.status === "completed" ? "bg-emerald-500" :
-                    "bg-red-400"
+                    snipe.status === "completed" ? "bg-emerald-500" : "bg-red-400"
                   }`} />
                   <div className="flex-1 min-w-0">
                     <div className="text-xs font-medium text-stone-700 truncate">
@@ -696,26 +648,18 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
                       {snipe.restaurantNames.length > 3 && ` +${snipe.restaurantNames.length - 3}`}
                     </div>
                     <div className="text-[10px] text-stone-400">
-                      {snipe.dates.map(d => formatDateShort(d)).join(", ")} &middot; Drop: {formatTime12(snipe.dropTime)} ET
-                      {snipe.qstashScheduled && <span className="text-blue-500 ml-1">&middot; server-side</span>}
-                      {snipe.result && <span className="ml-1">&middot; {snipe.result}</span>}
+                      {snipe.dates.map(d => formatDateShort(d)).join(", ")} · Drop: {formatTime12(snipe.dropTime)} ET
+                      {snipe.qstashScheduled && <span className="text-blue-500 ml-1">· server</span>}
+                      {snipe.result && <span className="ml-1">· {snipe.result}</span>}
                     </div>
                   </div>
                   <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
                     snipe.status === "waiting" ? "bg-blue-100 text-blue-600" :
                     snipe.status === "running" ? "bg-amber-100 text-amber-600" :
-                    snipe.status === "completed" ? "bg-emerald-100 text-emerald-600" :
-                    "bg-red-100 text-red-600"
-                  }`}>
-                    {snipe.status}
-                  </span>
+                    snipe.status === "completed" ? "bg-emerald-100 text-emerald-600" : "bg-red-100 text-red-600"
+                  }`}>{snipe.status}</span>
                   {(snipe.status === "waiting" || snipe.status === "completed" || snipe.status === "failed") && (
-                    <button
-                      onClick={() => removeScheduledSnipe(snipe.id)}
-                      className="text-stone-400 hover:text-stone-600 text-xs"
-                    >
-                      &times;
-                    </button>
+                    <button onClick={() => removeScheduledSnipe(snipe.id)} className="text-stone-400 hover:text-stone-600 text-xs">&times;</button>
                   )}
                 </div>
               ))}
@@ -727,34 +671,26 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
       {/* Event Log */}
       {events.length > 0 && (
         <div className="border-t border-stone-200">
-          <div
-            ref={logRef}
-            className="max-h-48 overflow-y-auto p-3 space-y-1 bg-stone-50 font-mono text-xs"
-          >
+          <div ref={logRef} className="max-h-48 overflow-y-auto p-3 space-y-1 bg-stone-50 font-mono text-xs">
             {events.map((event, i) => (
-              <div
-                key={i}
-                className={`flex items-start gap-2 ${
-                  event.type === "booked" ? "text-emerald-600 font-bold" :
-                  event.type === "error" || event.type === "book_failed" ? "text-red-500" :
-                  event.type === "slots_found" ? "text-blue-600" :
-                  "text-stone-500"
-                }`}
-              >
+              <div key={i} className={`flex items-start gap-2 ${
+                event.type === "booked" ? "text-emerald-600 font-bold" :
+                event.type === "error" || event.type === "book_failed" ? "text-red-500" :
+                event.type === "slots_found" ? "text-blue-600" : "text-stone-500"
+              }`}>
                 <span className="shrink-0">{getEventIcon(event.type)}</span>
                 <span>{getEventText(event)}</span>
               </div>
             ))}
           </div>
-
           {result === "success" && (
             <div className="px-4 py-3 bg-emerald-50 border-t border-emerald-200 text-emerald-700 text-sm font-medium text-center">
-              Reservation booked successfully!
+              Reservation booked!
             </div>
           )}
           {result === "failed" && !isRunning && (
             <div className="px-4 py-3 bg-red-50 border-t border-red-200 text-red-600 text-sm text-center">
-              No reservation booked. Try adjusting times, dates, or restaurants.
+              No slot found. Try adjusting times, dates, or flexibility.
             </div>
           )}
         </div>

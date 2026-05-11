@@ -421,9 +421,28 @@ export async function POST(request: Request) {
       const diag = getPollDiagnostics();
 
       // Signal whether this poll had any successful API calls
-      // This prevents the warm-up from clearing working cookies on next poll
       const had200s = (rlStats.pollStatusCounts[200] ?? 0) > 0;
       markPollSuccess(had200s);
+
+      // Per-restaurant summary (only when interesting — slots found or all-zero)
+      if (diffs.length > 0) {
+        const withSlots = diffs.filter(d => d.totalAvailable > 0);
+        const withNew = diffs.filter(d => d.newSlots.length > 0);
+        if (withSlots.length > 0) {
+          const summary = withSlots.map(d => `${d.restaurant.name}=${d.totalAvailable}${d.newSlots.length > 0 ? `(+${d.newSlots.length}new)` : ""}`).join(" | ");
+          console.log(`[Poll #${monitorState.pollCount}] Availability: ${summary}`);
+        }
+        if (withNew.length > 0) {
+          console.log(`[Poll #${monitorState.pollCount}] NEW SLOTS: ${withNew.map(d => `${d.restaurant.name} — ${d.newSlots.map(s => `${s.date} ${s.time}`).join(", ")}`).join(" | ")}`);
+        }
+        // WAF diagnosis
+        const total500s = rlStats.pollStatusCounts[500] ?? 0;
+        const totalReqs = Object.values(rlStats.pollStatusCounts).reduce((a, b) => a + b, 0);
+        if (total500s > 0 && total500s === totalReqs) {
+          console.warn(`[Poll #${monitorState.pollCount}] WAF BLOCKED — all ${total500s} requests returned 500. Likely Imperva blocking. Cookies may need refresh. Next poll will warm up.`);
+        }
+      }
+
       console.log(`[Poll #${monitorState.pollCount}] Done ${elapsed}s | ${totalSlots} slots | ${totalNew} new${rlSuffix} | ${diag}`);
 
       // Notifications
