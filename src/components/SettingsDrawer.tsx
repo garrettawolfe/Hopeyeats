@@ -41,6 +41,11 @@ export const DEFAULT_DAY_TIME_WINDOWS: Record<string, DayTimeWindow> = {
   saturday: { start: "19:30", end: "21:30" },
 };
 
+export const DEFAULT_BRUNCH_TIME_WINDOWS: Record<string, DayTimeWindow> = {
+  saturday: { start: "12:00", end: "15:30" },
+  sunday: { start: "12:00", end: "15:30" },
+};
+
 const DEFAULT_SETTINGS: AppSettings = {
   resyEmail: "",
   resyPassword: "",

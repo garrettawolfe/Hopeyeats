@@ -15,6 +15,7 @@ import SettingsDrawer, {
   setActiveProfile,
   addProfile,
   deleteProfile,
+  DEFAULT_BRUNCH_TIME_WINDOWS,
   type AppSettings,
 } from "@/components/SettingsDrawer";
 import RestaurantMonitorCard from "@/components/RestaurantMonitorCard";
@@ -157,6 +158,8 @@ function HomeInner() {
   // Refs for latest values (avoid stale closures)
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const mealFilterRef = useRef(mealFilter);
+  mealFilterRef.current = mealFilter;
 
   // --- Initialize profiles on mount ---
   useEffect(() => {
@@ -300,10 +303,11 @@ function HomeInner() {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 120_000);
 
-      // Build time filters for server-side auto-book
+      // Build time filters — swap to brunch windows when brunch mode is active
+      const isBrunch = mealFilterRef.current === "brunch";
       const timeFilters = currentSettings ? {
-        preferredDays: currentSettings.preferredDays,
-        dayTimeWindows: currentSettings.dayTimeWindows,
+        preferredDays: isBrunch ? ["saturday", "sunday"] : currentSettings.preferredDays,
+        dayTimeWindows: isBrunch ? DEFAULT_BRUNCH_TIME_WINDOWS : currentSettings.dayTimeWindows,
         blackoutDates: currentSettings.blackoutDates,
       } : undefined;
 
@@ -1012,8 +1016,8 @@ function HomeInner() {
               isAuthenticated={resyAuth?.authenticated ?? false}
               authToken={resyAuth?.authToken}
               partySize={settings.partySize ?? 4}
-              dayTimeWindows={settings.dayTimeWindows}
-              preferredDays={settings.preferredDays}
+              dayTimeWindows={mealFilter === "brunch" ? DEFAULT_BRUNCH_TIME_WINDOWS : settings.dayTimeWindows}
+              preferredDays={mealFilter === "brunch" ? ["saturday", "sunday"] : settings.preferredDays}
               onLog={(level, msg, data) => addLog(level, "snipe", msg, data)}
               onBooked={(event) => {
                 addToast(`Sniped! ${event.restaurant} at ${event.time} on ${event.date}`, "success", 10000);

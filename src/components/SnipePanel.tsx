@@ -37,6 +37,8 @@ interface Props {
 }
 
 const TIME_OPTIONS = [
+  "10:00", "10:30", "11:00", "11:30", "12:00", "12:30",
+  "13:00", "13:30", "14:00", "14:30", "15:00", "15:30",
   "17:00", "17:30", "18:00", "18:30", "19:00", "19:30",
   "20:00", "20:30", "21:00", "21:30", "22:00",
 ];
@@ -104,6 +106,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
   const [dateInput, setDateInput] = useState("");
   const [selectedTimes, setSelectedTimes] = useState<Set<string>>(new Set(["19:00", "19:30", "20:00"]));
   const [timesCustomized, setTimesCustomized] = useState(false);
+  // timesCustomized tracks whether user overrode auto-derived times (used to suppress auto-reset)
   const [timeRadius, setTimeRadius] = useState(30);
   const [snipeWindow, setSnipeWindow] = useState(60);
   const [isRunning, setIsRunning] = useState(false);
@@ -114,12 +117,11 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
 
   // Server-side scheduled snipes
   const [scheduledSnipes, setScheduledSnipes] = useState<ScheduledSnipe[]>([]);
-  const [showScheduler, setShowScheduler] = useState(false);
   const [scheduleDropTime, setScheduleDropTime] = useState("09:00");
   const [schedulingInProgress, setSchedulingInProgress] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  // Auto-derive preferred dinner times from settings windows when dates change
+  // Auto-derive times from settings windows when dates change (unless user customized)
   useEffect(() => {
     if (timesCustomized || !dayTimeWindows || dates.length === 0) return;
     const auto = timesFromWindows(dates, dayTimeWindows);
@@ -237,7 +239,6 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
       });
 
       if (res.ok) {
-        setShowScheduler(false);
         await fetchScheduledSnipes();
       }
     } catch { /* silent */ }
@@ -503,43 +504,32 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           <div className="flex items-center gap-2 mb-2">
             <span className="w-5 h-5 rounded-full bg-charcoal text-white text-[10px] flex items-center justify-center font-bold shrink-0">3</span>
             <span className="text-sm font-semibold text-charcoal">Dining times</span>
-            {!timesCustomized && dayTimeWindows && selectedTimes.size > 0 && (
-              <span className="text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full">from settings</span>
-            )}
-            <button
-              onClick={() => {
-                if (timesCustomized && dayTimeWindows) {
+            <span className="text-[10px] text-stone-400">tap to select</span>
+            {timesCustomized && dayTimeWindows && (
+              <button
+                onClick={() => {
                   const auto = timesFromWindows(dates, dayTimeWindows);
-                  if (auto.size > 0) setSelectedTimes(auto);
-                }
-                setTimesCustomized(v => !v);
-              }}
-              disabled={isRunning}
-              className="ml-auto text-[10px] text-stone-400 hover:text-stone-600 underline"
-            >
-              {timesCustomized ? "Reset to settings" : "Customize"}
-            </button>
+                  if (auto.size > 0) { setSelectedTimes(auto); setTimesCustomized(false); }
+                }}
+                disabled={isRunning}
+                className="ml-auto text-[10px] text-stone-400 hover:text-stone-600 underline"
+              >
+                Reset to settings
+              </button>
+            )}
           </div>
-          {timesCustomized ? (
-            <div className="flex flex-wrap gap-1.5">
-              {TIME_OPTIONS.map(t => (
-                <button key={t} onClick={() => toggleTime(t)} disabled={isRunning}
-                  className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    selectedTimes.has(t) ? "bg-charcoal text-white" : "bg-stone-100 text-stone-500 hover:bg-stone-200"
-                  }`}>
-                  {formatTime12(t)}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {Array.from(selectedTimes).sort().map(t => (
-                <span key={t} className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-stone-800 text-white">{formatTime12(t)}</span>
-              ))}
-              {selectedTimes.size === 0 && (
-                <span className="text-xs text-stone-400">Select dates first, or customize</span>
-              )}
-            </div>
+          <div className="flex flex-wrap gap-1.5">
+            {TIME_OPTIONS.map(t => (
+              <button key={t} onClick={() => toggleTime(t)} disabled={isRunning}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                  selectedTimes.has(t) ? "bg-charcoal text-white" : "bg-stone-100 text-stone-500 hover:bg-stone-200"
+                }`}>
+                {formatTime12(t)}
+              </button>
+            ))}
+          </div>
+          {selectedTimes.size === 0 && (
+            <p className="text-xs text-stone-400 mt-1.5">Select at least one time above</p>
           )}
         </div>
 
@@ -561,11 +551,20 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
 
         {/* Advanced options */}
         {showAdvanced && (
-          <div className="grid grid-cols-2 gap-3 bg-stone-50 border border-stone-100 rounded-xl p-3">
+          <div className="grid grid-cols-3 gap-3 bg-stone-50 border border-stone-100 rounded-xl p-3">
+            <div>
+              <label className="block text-xs text-stone-500 mb-1">Schedule drop (ET)</label>
+              <select value={scheduleDropTime} onChange={(e) => setScheduleDropTime(e.target.value)} disabled={isRunning}
+                className="w-full px-2 py-2 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
+                {[...new Set([...DROP_TIME_OPTIONS, scheduleDropTime])].sort().map(t => (
+                  <option key={t} value={t}>{formatTime12(t)} ET</option>
+                ))}
+              </select>
+            </div>
             <div>
               <label className="block text-xs text-stone-500 mb-1">Time flexibility</label>
               <select value={timeRadius} onChange={(e) => setTimeRadius(Number(e.target.value))} disabled={isRunning}
-                className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
+                className="w-full px-2 py-2 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
                 <option value={15}>±15 min</option>
                 <option value={30}>±30 min</option>
                 <option value={60}>±60 min</option>
@@ -575,7 +574,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
             <div>
               <label className="block text-xs text-stone-500 mb-1">Snipe window</label>
               <select value={snipeWindow} onChange={(e) => setSnipeWindow(Number(e.target.value))} disabled={isRunning}
-                className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
+                className="w-full px-2 py-2 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
                 <option value={15}>15 sec</option>
                 <option value={30}>30 sec</option>
                 <option value={60}>60 sec</option>
@@ -593,9 +592,9 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               {launchLabel}
             </button>
             {canLaunch && (
-              <button onClick={() => setShowScheduler(v => !v)}
-                className="w-full py-2.5 border border-stone-200 text-stone-600 rounded-xl text-sm font-medium hover:bg-stone-50 transition-colors">
-                {showScheduler ? "Cancel" : `Schedule for ${formatTime12(scheduleDropTime)} ET`}
+              <button onClick={scheduleSnipe} disabled={schedulingInProgress || !authToken}
+                className="w-full py-2.5 border border-stone-200 text-stone-600 rounded-xl text-sm font-medium hover:bg-stone-50 transition-colors disabled:opacity-50">
+                {schedulingInProgress ? "Scheduling..." : `Schedule for ${formatTime12(scheduleDropTime)} ET`}
               </button>
             )}
           </div>
@@ -604,28 +603,6 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
             className="w-full py-3.5 bg-red-600 text-white rounded-xl text-sm font-semibold hover:bg-red-700 transition-colors">
             Cancel Snipe
           </button>
-        )}
-
-        {/* Schedule confirm */}
-        {showScheduler && !isRunning && (
-          <div className="bg-stone-50 border border-stone-200 rounded-xl p-3 space-y-2">
-            <p className="text-xs text-stone-500">
-              Auto-fires at the configured drop time — runs server-side, no need to keep the browser open.
-            </p>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-stone-600">Drop time (ET):</span>
-              <select value={scheduleDropTime} onChange={(e) => setScheduleDropTime(e.target.value)}
-                className="px-3 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
-                {[...new Set([...DROP_TIME_OPTIONS, scheduleDropTime])].sort().map(t => (
-                  <option key={t} value={t}>{formatTime12(t)} ET</option>
-                ))}
-              </select>
-              <button onClick={scheduleSnipe} disabled={schedulingInProgress || !authToken}
-                className="ml-auto px-4 py-1.5 bg-charcoal text-white rounded-lg text-sm font-medium hover:bg-charcoal/90 disabled:opacity-50">
-                {schedulingInProgress ? "Scheduling..." : "Confirm"}
-              </button>
-            </div>
-          </div>
         )}
 
         {/* Scheduled snipes list */}
