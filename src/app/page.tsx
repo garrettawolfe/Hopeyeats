@@ -431,7 +431,11 @@ function HomeInner() {
 
               const totalSlots = result.diffs.reduce((s, d) => s + (d.currentSlots?.length ?? 0), 0);
               const totalNew = result.diffs.reduce((s, d) => s + d.newSlots.length, 0);
-              const withSlots = result.diffs.filter((d) => (d.currentSlots?.length ?? 0) > 0).map((d) => d.restaurant.name);
+              // Exclude bar-only restaurants from the avail summary (e.g. The Mulberry)
+              const withSlots = result.diffs
+                .filter((d) => (d.currentSlots?.length ?? 0) > 0)
+                .filter((d) => { const r = resyRestaurants.find(x => x.id === d.restaurant.id); return !r || !r.category || r.category.some(c => c !== "bar"); })
+                .map((d) => d.restaurant.name);
 
               // Track consecutive all-fail polls for exponential backoff
               // Parse diagnostics string for 200 status count (format: "statuses={200:N,...}")

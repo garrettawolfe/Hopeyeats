@@ -11,7 +11,9 @@ import {
 function getQStash(): Client | null {
   const token = process.env.QSTASH_TOKEN;
   if (!token) return null;
-  return new Client({ token });
+  // Explicit US/global endpoint — avoids eu-central-1 routing error when
+  // token was created in the global region
+  return new Client({ token, baseUrl: "https://qstash.upstash.io" });
 }
 
 /**

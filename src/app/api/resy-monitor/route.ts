@@ -425,9 +425,14 @@ export async function POST(request: Request) {
       markPollSuccess(had200s);
 
       // Per-restaurant summary (only when interesting — slots found or all-zero)
+      // Exclude bar-only restaurants (e.g. The Mulberry) from dinner-focused summaries
+      const isDinnerVenue = (restaurantId: string) => {
+        const r = restaurants.find(x => x.id === restaurantId);
+        return !r?.category || r.category.some(c => c !== "bar");
+      };
       if (diffs.length > 0) {
-        const withSlots = diffs.filter(d => d.totalAvailable > 0);
-        const withNew = diffs.filter(d => d.newSlots.length > 0);
+        const withSlots = diffs.filter(d => d.totalAvailable > 0 && isDinnerVenue(d.restaurant.id));
+        const withNew = diffs.filter(d => d.newSlots.length > 0 && isDinnerVenue(d.restaurant.id));
         if (withSlots.length > 0) {
           const summary = withSlots.map(d => `${d.restaurant.name}=${d.totalAvailable}${d.newSlots.length > 0 ? `(+${d.newSlots.length}new)` : ""}`).join(" | ");
           console.log(`[Poll #${monitorState.pollCount}] Availability: ${summary}`);
