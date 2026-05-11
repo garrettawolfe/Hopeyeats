@@ -87,9 +87,12 @@ export async function POST(request: Request) {
     }
 
     const snipeId = `sched-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const appUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+    // NEXT_PUBLIC_APP_URL must be set to the stable production URL (e.g. https://hopeyeats.vercel.app)
+    // VERCEL_URL is deployment-specific and may 404 by the time QStash fires hours later
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL
+      ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null)
+      ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null)
+      ?? "http://localhost:3000";
 
     // Schedule via QStash
     const qstash = getQStash();
