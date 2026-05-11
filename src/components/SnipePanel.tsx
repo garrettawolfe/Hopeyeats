@@ -30,6 +30,8 @@ interface Props {
   isAuthenticated: boolean;
   authToken?: string;
   partySize: number;
+  dayTimeWindows?: Record<string, { start?: string; end?: string }>;
+  preferredDays?: string[];
   onBooked?: (event: SnipeEvent) => void;
   onLog?: (level: LogLevel, msg: string, data?: Record<string, unknown>) => void;
 }
@@ -39,8 +41,38 @@ const TIME_OPTIONS = [
   "20:00", "20:30", "21:00", "21:30", "22:00",
 ];
 
+const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
+/** Return times from TIME_OPTIONS that fall within the window for any of the given dates. */
+function timesFromWindows(
+  dates: string[],
+  windows: Record<string, { start?: string; end?: string }>,
+): Set<string> {
+  const result = new Set<string>();
+  for (const date of dates) {
+    const dayName = DAY_NAMES[new Date(date + "T12:00:00").getDay()];
+    const win = windows[dayName];
+    if (!win) continue;
+    for (const t of TIME_OPTIONS) {
+      if ((!win.start || t >= win.start) && (!win.end || t <= win.end)) result.add(t);
+    }
+  }
+  return result;
+}
+
+/** Parse "9:00 AM ET" → "09:00". Returns null if unparseable. */
+function parseBookingTimeTo24(bt: string | null | undefined): string | null {
+  if (!bt) return null;
+  const m = bt.match(/(\d+):(\d+)\s*(AM|PM)/i);
+  if (!m) return null;
+  let h = parseInt(m[1]);
+  if (m[3].toUpperCase() === "PM" && h !== 12) h += 12;
+  if (m[3].toUpperCase() === "AM" && h === 12) h = 0;
+  return `${String(h).padStart(2, "0")}:${m[2]}`;
+}
+
 const DROP_TIME_OPTIONS = [
-  "08:00", "09:00", "10:00", "11:00", "12:00",
+  "00:00", "08:00", "09:00", "10:00", "11:00", "12:00",
 ];
 
 function formatTime12(t: string): string {
@@ -61,9 +93,7 @@ function getDropDate(restaurant: Restaurant): string | null {
   return d.toISOString().split("T")[0];
 }
 
-// Server-side scheduling via Upstash Redis + QStash
-
-export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, onBooked, onLog }: Props) {
+export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, dayTimeWindows, onBooked, onLog }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [snipePartySize, setSnipePartySize] = useState(defaultPartySize);
   const [dates, setDates] = useState<string[]>(() => {
@@ -73,6 +103,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
   });
   const [dateInput, setDateInput] = useState("");
   const [selectedTimes, setSelectedTimes] = useState<Set<string>>(new Set(["19:00", "19:30", "20:00"]));
+  const [timesCustomized, setTimesCustomized] = useState(false);
   const [timeRadius, setTimeRadius] = useState(30);
   const [snipeWindow, setSnipeWindow] = useState(60);
   const [isRunning, setIsRunning] = useState(false);
@@ -86,6 +117,21 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
   const [showScheduler, setShowScheduler] = useState(false);
   const [scheduleDropTime, setScheduleDropTime] = useState("09:00");
   const [schedulingInProgress, setSchedulingInProgress] = useState(false);
+
+  // Auto-derive preferred dinner times from settings windows when dates change
+  useEffect(() => {
+    if (timesCustomized || !dayTimeWindows || dates.length === 0) return;
+    const auto = timesFromWindows(dates, dayTimeWindows);
+    if (auto.size > 0) setSelectedTimes(auto);
+  }, [dates, dayTimeWindows, timesCustomized]);
+
+  // Auto-set drop time from the selected restaurant's booking window
+  useEffect(() => {
+    if (selectedIds.size !== 1) return;
+    const r = restaurants.find(x => x.id === Array.from(selectedIds)[0]);
+    const parsed = parseBookingTimeTo24(r?.bookingTime);
+    if (parsed) setScheduleDropTime(parsed);
+  }, [selectedIds, restaurants]);
 
   // Fetch scheduled snipes from server on mount + periodically
   const fetchScheduledSnipes = useCallback(async () => {
@@ -114,6 +160,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
   };
 
   const toggleTime = (t: string) => {
+    setTimesCustomized(true);
     setSelectedTimes(prev => {
       const next = new Set(prev);
       if (next.has(t)) next.delete(t);
@@ -517,23 +564,56 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
 
         {/* Preferred Times */}
         <div>
-          <label className="block text-xs text-stone-500 font-medium mb-1.5">Preferred Times</label>
-          <div className="flex flex-wrap gap-1.5">
-            {TIME_OPTIONS.map(t => (
-              <button
-                key={t}
-                onClick={() => toggleTime(t)}
-                disabled={isRunning}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  selectedTimes.has(t)
-                    ? "bg-charcoal text-white"
-                    : "bg-stone-100 text-stone-500 hover:bg-stone-200"
-                }`}
-              >
-                {formatTime12(t)}
-              </button>
-            ))}
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs text-stone-500 font-medium">
+              Preferred Times
+              {!timesCustomized && dayTimeWindows && selectedTimes.size > 0 && (
+                <span className="ml-1.5 text-[10px] text-amber-600 font-normal">from settings</span>
+              )}
+            </label>
+            <button
+              onClick={() => {
+                if (timesCustomized && dayTimeWindows) {
+                  const auto = timesFromWindows(dates, dayTimeWindows);
+                  if (auto.size > 0) setSelectedTimes(auto);
+                }
+                setTimesCustomized(v => !v);
+              }}
+              disabled={isRunning}
+              className="text-[10px] text-stone-400 hover:text-stone-600 underline"
+            >
+              {timesCustomized ? "Reset to settings" : "Customize"}
+            </button>
           </div>
+          {timesCustomized ? (
+            <div className="flex flex-wrap gap-1.5">
+              {TIME_OPTIONS.map(t => (
+                <button
+                  key={t}
+                  onClick={() => toggleTime(t)}
+                  disabled={isRunning}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    selectedTimes.has(t)
+                      ? "bg-charcoal text-white"
+                      : "bg-stone-100 text-stone-500 hover:bg-stone-200"
+                  }`}
+                >
+                  {formatTime12(t)}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {Array.from(selectedTimes).sort().map(t => (
+                <span key={t} className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-charcoal text-white">
+                  {formatTime12(t)}
+                </span>
+              ))}
+              {selectedTimes.size === 0 && (
+                <span className="text-xs text-stone-400">No times — add target dates or customize</span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Action Buttons */}
@@ -580,7 +660,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
                 onChange={(e) => setScheduleDropTime(e.target.value)}
                 className="px-3 py-2 border border-blue-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 bg-white"
               >
-                {DROP_TIME_OPTIONS.map(t => (
+                {[...new Set([...DROP_TIME_OPTIONS, scheduleDropTime])].sort().map(t => (
                   <option key={t} value={t}>{formatTime12(t)} ET</option>
                 ))}
               </select>

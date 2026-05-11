@@ -1008,6 +1008,8 @@ function HomeInner() {
               isAuthenticated={resyAuth?.authenticated ?? false}
               authToken={resyAuth?.authToken}
               partySize={settings.partySize ?? 4}
+              dayTimeWindows={settings.dayTimeWindows}
+              preferredDays={settings.preferredDays}
               onLog={(level, msg, data) => addLog(level, "snipe", msg, data)}
               onBooked={(event) => {
                 addToast(`Sniped! ${event.restaurant} at ${event.time} on ${event.date}`, "success", 10000);
@@ -1025,6 +1027,7 @@ function HomeInner() {
           </div>
         )}
 
+        {appMode === "monitor" && (<>
         {/* City Tabs */}
         <div className="flex gap-1 mb-3">
           {([["all", "All Cities"], ["nyc", "NYC"], ["miami", "Miami"], ["hamptons", "Hamptons"]] as const).map(([key, label]) => (
@@ -1156,6 +1159,7 @@ function HomeInner() {
             Rate limited — backing off {Math.round((latestResult.rateLimitStats.backoffRemaining ?? 0) / 1000)}s
           </div>
         )}
+        </>)}
 
         <footer className="mt-12 pt-6 border-t border-stone-200 text-center text-[10px] sm:text-xs text-stone-400 pb-4">
           <p>WolfePack Eats · Monitoring {resyRestaurants.length} restaurants on Resy</p>
