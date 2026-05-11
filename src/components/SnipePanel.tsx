@@ -120,6 +120,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
   const [scheduleDropTime, setScheduleDropTime] = useState("09:00");
   const [schedulingInProgress, setSchedulingInProgress] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [redisAvailable, setRedisAvailable] = useState<boolean | null>(null);
 
   // Auto-derive times from settings windows when dates change (unless user customized)
   useEffect(() => {
@@ -150,22 +151,27 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     });
   }, [selectedIds, restaurants]);
 
-  // Fetch scheduled snipes from server on mount + periodically
+  // Fetch scheduled snipes — back off if Redis is unavailable to avoid log spam
   const fetchScheduledSnipes = useCallback(async () => {
     try {
       const res = await fetch("/api/scheduled-snipes");
       if (res.ok) {
         const data = await res.json();
         setScheduledSnipes(data.snipes ?? []);
+        setRedisAvailable(!data.warning);
       }
-    } catch { /* silent */ }
+    } catch {
+      setRedisAvailable(false);
+    }
   }, []);
 
   useEffect(() => {
     fetchScheduledSnipes();
-    const timer = setInterval(fetchScheduledSnipes, 30_000); // refresh every 30s
+    // If Redis is unavailable, poll every 5 minutes instead of 30 seconds
+    const interval = redisAvailable === false ? 300_000 : 60_000;
+    const timer = setInterval(fetchScheduledSnipes, interval);
     return () => clearInterval(timer);
-  }, [fetchScheduledSnipes]);
+  }, [fetchScheduledSnipes, redisAvailable]);
 
   const toggleRestaurant = (id: string) => {
     setSelectedIds(prev => {
@@ -592,10 +598,16 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               {launchLabel}
             </button>
             {canLaunch && (
-              <button onClick={scheduleSnipe} disabled={schedulingInProgress || !authToken}
-                className="w-full py-2.5 border border-stone-200 text-stone-600 rounded-xl text-sm font-medium hover:bg-stone-50 transition-colors disabled:opacity-50">
-                {schedulingInProgress ? "Scheduling..." : `Schedule for ${formatTime12(scheduleDropTime)} ET`}
-              </button>
+              redisAvailable === false ? (
+                <div className="w-full py-2 text-center text-xs text-stone-400 border border-dashed border-stone-200 rounded-xl">
+                  Scheduling unavailable — add Upstash Redis env vars
+                </div>
+              ) : (
+                <button onClick={scheduleSnipe} disabled={schedulingInProgress || !authToken}
+                  className="w-full py-2.5 border border-stone-200 text-stone-600 rounded-xl text-sm font-medium hover:bg-stone-50 transition-colors disabled:opacity-50">
+                  {schedulingInProgress ? "Scheduling..." : `Schedule for ${formatTime12(scheduleDropTime)} ET`}
+                </button>
+              )
             )}
           </div>
         ) : (
