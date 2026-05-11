@@ -47,15 +47,21 @@ function nextDropTimestamp(dropTime: string): number {
  * GET /api/scheduled-snipes — list all scheduled snipes
  */
 export async function GET() {
+  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
+    return NextResponse.json({
+      snipes: [],
+      warning: "Redis not configured — add UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN env vars",
+    });
+  }
   try {
     const snipes = await listScheduledSnipes();
     // Strip auth tokens from response
     const safe = snipes.map(({ authToken: _a, ...rest }) => rest);
     return NextResponse.json({ snipes: safe });
   } catch (err) {
-    // Redis unavailable — return empty list so the UI doesn't break
-    console.error("[Scheduler] GET failed (Redis unavailable?):", err instanceof Error ? err.message : err);
-    return NextResponse.json({ snipes: [], warning: "Could not reach storage — scheduled snipes temporarily unavailable" });
+    // Redis configured but unreachable
+    console.error("[Scheduler] GET failed (Redis connection error):", err instanceof Error ? err.message : err);
+    return NextResponse.json({ snipes: [], warning: "Could not reach Redis — check UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN" });
   }
 }
 
