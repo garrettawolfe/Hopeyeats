@@ -11,62 +11,34 @@ import {
 function getQStash(): Client | null {
   const token = process.env.QSTASH_TOKEN;
   if (!token) return null;
-  // Explicit US/global endpoint — avoids eu-central-1 routing error when
-  // token was created in the global region
   return new Client({ token, baseUrl: "https://qstash.upstash.io" });
 }
 
-/**
- * Compute the next occurrence of a drop time (ET) as a Unix timestamp.
- * If the drop time has already passed today, schedule for tomorrow.
- */
 function nextDropTimestamp(dropTime: string): number {
   const [h, m] = dropTime.split(":").map(Number);
   const now = new Date();
-  // Get current time in ET
   const etNow = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
-
-  // Build target date in ET
   const target = new Date(etNow);
   target.setHours(h, m, 0, 0);
-
-  // If drop time already passed today, schedule for tomorrow
   if (target.getTime() <= etNow.getTime()) {
     target.setDate(target.getDate() + 1);
   }
-
-  // Convert ET target back to UTC
-  // Get the offset between ET and UTC
   const etOffset = etNow.getTime() - now.getTime();
   const utcTarget = new Date(target.getTime() - etOffset);
-
   return Math.floor(utcTarget.getTime() / 1000);
 }
 
-/**
- * GET /api/scheduled-snipes — list all scheduled snipes
- */
 export async function GET() {
   try {
     const snipes = await listScheduledSnipes();
-    // Strip auth tokens from response
     const safe = snipes.map(({ authToken: _a, ...rest }) => rest);
     return NextResponse.json({ snipes: safe });
   } catch (err) {
-    // Redis unavailable — return empty list so the UI doesn't break
     console.error("[Scheduler] GET failed (Redis unavailable?):", err instanceof Error ? err.message : err);
     return NextResponse.json({ snipes: [], warning: "Could not reach storage — scheduled snipes temporarily unavailable" });
   }
 }
 
-/**
- * POST /api/scheduled-snipes — create a new scheduled snipe
- *
- * Body: {
- *   restaurantIds, restaurantNames, dates, preferredTimes,
- *   timeRadius, snipeWindowSeconds, partySize, dropTime, authToken
- * }
- */
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -87,11 +59,13 @@ export async function POST(request: Request) {
     }
 
     const snipeId = `sched-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const appUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+    // NEXT_PUBLIC_APP_URL must be set to the stable production URL (e.g. https://hopeyeats.vercel.app)
+    // VERCEL_URL is deployment-specific and may 404 by the time QStash fires hours later
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL
+      ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null)
+      ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null)
+      ?? "http://localhost:3000";
 
-    // Schedule via QStash
     const qstash = getQStash();
     let qstashMessageId: string | undefined;
 
@@ -138,8 +112,6 @@ export async function POST(request: Request) {
     };
 
     await addScheduledSnipe(snipe);
-
-    // Cleanup old snipes while we're at it
     await cleanupOldSnipes();
 
     return NextResponse.json({
@@ -159,9 +131,6 @@ export async function POST(request: Request) {
   }
 }
 
-/**
- * DELETE /api/scheduled-snipes?id=xxx — remove a scheduled snipe
- */
 export async function DELETE(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -170,7 +139,6 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "id required" }, { status: 400 });
     }
 
-    // Cancel QStash message if possible
     const snipes = await listScheduledSnipes();
     const snipe = snipes.find((s) => s.id === id);
     if (snipe?.qstashMessageId) {

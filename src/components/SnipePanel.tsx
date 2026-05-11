@@ -1,14 +1,9 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 import type { Restaurant } from "@/data/restaurants";
 import type { LogLevel } from "@/lib/logger";
-
-interface SnipeEvent {
-  type: string;
-  [key: string]: unknown;
-}
 
 interface ScheduledSnipe {
   id: string;
@@ -32,7 +27,7 @@ interface Props {
   partySize: number;
   dayTimeWindows?: Record<string, { start?: string; end?: string }>;
   preferredDays?: string[];
-  onBooked?: (event: SnipeEvent) => void;
+  onBooked?: (event: Record<string, unknown>) => void;
   onLog?: (level: LogLevel, msg: string, data?: Record<string, unknown>) => void;
 }
 
@@ -45,7 +40,6 @@ const TIME_OPTIONS = [
 
 const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
-/** Return times from TIME_OPTIONS that fall within the window for any of the given dates. */
 function timesFromWindows(
   dates: string[],
   windows: Record<string, { start?: string; end?: string }>,
@@ -95,7 +89,7 @@ function getDropDate(restaurant: Restaurant): string | null {
   return d.toISOString().split("T")[0];
 }
 
-export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, dayTimeWindows, onBooked, onLog }: Props) {
+export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, dayTimeWindows, onLog }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [snipePartySize, setSnipePartySize] = useState(defaultPartySize);
   const [dates, setDates] = useState<string[]>(() => {
@@ -106,20 +100,13 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
   const [dateInput, setDateInput] = useState("");
   const [selectedTimes, setSelectedTimes] = useState<Set<string>>(new Set(["19:00", "19:30", "20:00"]));
   const [timesCustomized, setTimesCustomized] = useState(false);
-  // timesCustomized tracks whether user overrode auto-derived times (used to suppress auto-reset)
   const [timeRadius, setTimeRadius] = useState(30);
   const [snipeWindow, setSnipeWindow] = useState(60);
-  const [isRunning, setIsRunning] = useState(false);
-  const [events, setEvents] = useState<SnipeEvent[]>([]);
-  const [result, setResult] = useState<"success" | "failed" | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const logRef = useRef<HTMLDivElement>(null);
-
-  // Server-side scheduled snipes
-  const [scheduledSnipes, setScheduledSnipes] = useState<ScheduledSnipe[]>([]);
   const [scheduleDropTime, setScheduleDropTime] = useState("09:00");
   const [schedulingInProgress, setSchedulingInProgress] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const [scheduledSnipes, setScheduledSnipes] = useState<ScheduledSnipe[]>([]);
   const [redisAvailable, setRedisAvailable] = useState<boolean | null>(null);
 
   // Auto-derive times from settings windows when dates change (unless user customized)
@@ -151,7 +138,6 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     });
   }, [selectedIds, restaurants]);
 
-  // Fetch scheduled snipes — back off if Redis is unavailable to avoid log spam
   const fetchScheduledSnipes = useCallback(async () => {
     try {
       const res = await fetch("/api/scheduled-snipes");
@@ -165,11 +151,16 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     }
   }, []);
 
+  // Initial fetch on mount
   useEffect(() => {
     fetchScheduledSnipes();
-    // If Redis is unavailable, poll every 5 minutes instead of 30 seconds
-    const interval = redisAvailable === false ? 300_000 : 60_000;
-    const timer = setInterval(fetchScheduledSnipes, interval);
+  }, [fetchScheduledSnipes]);
+
+  // Polling interval — back off to 10 min when Redis is unavailable to avoid log spam
+  useEffect(() => {
+    if (redisAvailable === null) return;
+    const ms = redisAvailable === false ? 10 * 60_000 : 60_000;
+    const timer = setInterval(fetchScheduledSnipes, ms);
     return () => clearInterval(timer);
   }, [fetchScheduledSnipes, redisAvailable]);
 
@@ -203,15 +194,10 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     setDates(prev => prev.filter(x => x !== d));
   };
 
-  const selectAllRestaurants = () => {
-    setSelectedIds(new Set(restaurants.filter(r => r.resyVenueId).map(r => r.id)));
-  };
-
   const clearAllRestaurants = () => {
     setSelectedIds(new Set());
   };
 
-  // Auto-fill dates from selected restaurant drop windows
   const autoFillDropDates = () => {
     const selected = restaurants.filter(r => selectedIds.has(r.id));
     const dropDates = new Set<string>(dates);
@@ -245,6 +231,8 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
       });
 
       if (res.ok) {
+        const data = await res.json();
+        onLog?.("info", `Snipe scheduled for ${formatTime12(scheduleDropTime)} ET`, { id: data.id });
         await fetchScheduledSnipes();
       }
     } catch { /* silent */ }
@@ -258,156 +246,19 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     } catch { /* silent */ }
   };
 
-  const launchSnipe = async () => {
-    if (selectedIds.size === 0 || selectedTimes.size === 0 || dates.length === 0) return;
-
-    setIsRunning(true);
-    setEvents([]);
-    setResult(null);
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const res = await fetch("/api/resy-snipe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          restaurantIds: Array.from(selectedIds),
-          dates,
-          partySize: snipePartySize,
-          preferredTimes: Array.from(selectedTimes).sort(),
-          timeRadius,
-          snipeWindowSeconds: snipeWindow,
-          pollIntervalMs: 300,
-          authToken,
-        }),
-        signal: controller.signal,
-      });
-
-      if (!res.ok || !res.body) {
-        const err = await res.json().catch(() => ({ error: "Request failed" }));
-        setEvents(prev => [...prev, { type: "error", error: err.error ?? "Request failed" }]);
-        setResult("failed");
-        setIsRunning(false);
-        return;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const event: SnipeEvent = JSON.parse(line);
-            setEvents(prev => [...prev, event]);
-
-            if (event.type === "started") {
-              onLog?.("info", `Snipe started — targets: ${(event.targets as string[])?.join(", ")}`, { dates: event.dates });
-            } else if (event.type === "attempt") {
-              if (Number(event.attempt) % 5 === 1) {
-                onLog?.("debug", `Snipe attempt #${event.attempt} (${Math.round(Number(event.elapsed) / 1000)}s elapsed)`);
-              }
-            } else if (event.type === "slots_found") {
-              onLog?.("info", `Slots found — ${event.restaurant} on ${event.date}: ${event.count} slots`, { bestTime: event.bestTime });
-            } else if (event.type === "booked") {
-              onLog?.("success", `BOOKED — ${event.restaurant} ${event.date} at ${event.time}`, { reservationId: event.reservationId });
-              setResult("success");
-              onBooked?.(event);
-            } else if (event.type === "book_failed") {
-              onLog?.("error", `Book failed — ${event.restaurant}: ${event.error}`, { error: event.error });
-            } else if (event.type === "error") {
-              onLog?.("error", `Snipe error: ${event.error}`);
-            } else if (event.type === "done") {
-              onLog?.(event.booked ? "success" : "info", `Snipe done`, { booked: event.booked, elapsed: event.elapsed });
-              if (!event.booked) setResult("failed");
-            }
-
-            setTimeout(() => {
-              logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
-            }, 50);
-          } catch { /* skip */ }
-        }
-      }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
-        setEvents(prev => [...prev, { type: "cancelled" }]);
-        onLog?.("warn", "Snipe cancelled by user");
-      } else {
-        setEvents(prev => [...prev, { type: "error", error: String(err) }]);
-        onLog?.("error", `Snipe stream error: ${String(err)}`);
-      }
-      setResult("failed");
-    } finally {
-      setIsRunning(false);
-      abortRef.current = null;
-    }
-  };
-
-  const cancelSnipe = () => {
-    abortRef.current?.abort();
-  };
-
-  const getEventIcon = (type: string) => {
-    switch (type) {
-      case "started": return "\u{1F680}";
-      case "attempt": return "\u{1F50D}";
-      case "slots_found": return "\u2728";
-      case "booked": return "\u2705";
-      case "book_failed": return "\u274C";
-      case "error": return "\u26A0\uFE0F";
-      case "done": return "\u{1F3C1}";
-      case "cancelled": return "\u{1F6D1}";
-      default: return "\u2022";
-    }
-  };
-
-  const getEventText = (event: SnipeEvent): string => {
-    switch (event.type) {
-      case "started": {
-        const targets = event.targets as string[];
-        const ds = event.dates as string[] | undefined;
-        const dateStr = ds && ds.length > 1 ? `${ds.length} dates` : String(event.date ?? ds?.[0] ?? "");
-        return `Targeting ${targets?.join(", ")} on ${dateStr}`;
-      }
-      case "attempt":
-        return `Attempt #${event.attempt} (${Math.round(Number(event.elapsed) / 1000)}s)`;
-      case "slots_found":
-        return `${event.restaurant} (${event.date}): ${event.count} slots, best: ${formatTime12(String(event.bestTime))}`;
-      case "booked":
-        return `BOOKED! ${event.restaurant} at ${formatTime12(String(event.time))} on ${event.date}`;
-      case "book_failed":
-        return `${event.restaurant} ${formatTime12(String(event.time))}: ${event.error}`;
-      case "error":
-        return `Error: ${event.error}`;
-      case "done":
-        return `Finished \u2014 ${event.attempts} attempts in ${Math.round(Number(event.elapsed) / 1000)}s across ${event.datesSearched ?? 1} date(s)`;
-      case "cancelled":
-        return "Snipe cancelled";
-      default:
-        return JSON.stringify(event);
-    }
-  };
-
   const resyRestaurants = restaurants.filter(r => r.resyVenueId);
-  const canLaunch = isAuthenticated && selectedIds.size > 0 && selectedTimes.size > 0 && dates.length > 0;
+  const canSchedule = isAuthenticated && selectedIds.size > 0 && selectedTimes.size > 0 && dates.length > 0 && !!authToken;
   const firstSelected = restaurants.find(r => selectedIds.has(r.id));
-  const launchLabel = (() => {
+
+  const scheduleLabel = (() => {
+    if (!isAuthenticated) return "Auth required";
     if (selectedIds.size === 0) return "Select a restaurant above";
     if (dates.length === 0) return "Select a target date above";
+    if (selectedTimes.size === 0) return "Select dining times above";
     const name = firstSelected?.name ?? "";
     const extra = selectedIds.size > 1 ? ` +${selectedIds.size - 1}` : "";
     const dateStr = dates.length === 1 ? formatDateShort(dates[0]) : `${dates.length} dates`;
-    return `Snipe Now — ${name}${extra}, ${dateStr}`;
+    return schedulingInProgress ? "Scheduling..." : `Schedule — ${name}${extra}, ${dateStr}`;
   })();
 
   const sel = (active: boolean) =>
@@ -423,7 +274,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-serif text-lg text-charcoal">Snipe Mode</h2>
-            <p className="text-xs text-stone-400 mt-0.5">Grabs a slot the moment it opens on Resy</p>
+            <p className="text-xs text-stone-400 mt-0.5">Schedule a snipe to fire automatically when reservations drop</p>
           </div>
           {!isAuthenticated && (
             <span className="text-xs text-red-500 bg-red-50 px-2 py-1 rounded-full border border-red-100">Auth required</span>
@@ -439,7 +290,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               {selectedIds.size > 0 && <span className="ml-1.5 text-xs font-normal text-stone-400">{selectedIds.size} selected</span>}
             </span>
             {selectedIds.size > 0 && (
-              <button onClick={clearAllRestaurants} disabled={isRunning} className="ml-auto text-[10px] text-stone-400 hover:text-stone-600 underline">Clear</button>
+              <button onClick={clearAllRestaurants} className="ml-auto text-[10px] text-stone-400 hover:text-stone-600 underline">Clear</button>
             )}
           </div>
           <div className="space-y-1.5 max-h-56 overflow-y-auto pr-0.5">
@@ -447,7 +298,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               const isSelected = selectedIds.has(r.id);
               const dropDate = getDropDate(r);
               return (
-                <button key={r.id} onClick={() => toggleRestaurant(r.id)} disabled={isRunning} className={sel(isSelected)}>
+                <button key={r.id} onClick={() => toggleRestaurant(r.id)} className={sel(isSelected)}>
                   <span className="font-medium text-sm truncate">{r.name}</span>
                   <div className="text-right shrink-0 ml-3 leading-tight">
                     <div className={`text-[11px] ${isSelected ? "text-white/60" : "text-stone-400"}`}>
@@ -471,7 +322,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
             <span className="w-5 h-5 rounded-full bg-charcoal text-white text-[10px] flex items-center justify-center font-bold shrink-0">2</span>
             <span className="text-sm font-semibold text-charcoal">Target dining date</span>
             {selectedIds.size > 0 && dates.length === 0 && (
-              <button onClick={autoFillDropDates} disabled={isRunning} className="ml-auto text-[11px] text-amber-600 hover:text-amber-800 font-medium underline">
+              <button onClick={autoFillDropDates} className="ml-auto text-[11px] text-amber-600 hover:text-amber-800 font-medium underline">
                 Auto-fill from booking window
               </button>
             )}
@@ -483,9 +334,8 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               onChange={(e) => setDateInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && dateInput) addDate(dateInput); }}
               className="flex-1 px-3 py-2 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
-              disabled={isRunning}
             />
-            <button onClick={() => addDate(dateInput)} disabled={isRunning || !dateInput}
+            <button onClick={() => addDate(dateInput)} disabled={!dateInput}
               className="px-3 py-2 bg-charcoal text-white rounded-lg text-sm font-medium hover:bg-charcoal/90 disabled:opacity-40">
               Add
             </button>
@@ -495,11 +345,11 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               {dates.map(d => (
                 <span key={d} className="inline-flex items-center gap-1 bg-stone-100 text-stone-700 px-2.5 py-1 rounded-lg text-xs">
                   {formatDateShort(d)}
-                  <button onClick={() => removeDate(d)} disabled={isRunning} className="text-stone-400 hover:text-stone-600">&times;</button>
+                  <button onClick={() => removeDate(d)} className="text-stone-400 hover:text-stone-600">&times;</button>
                 </span>
               ))}
               {dates.length > 1 && (
-                <button onClick={() => setDates([])} disabled={isRunning} className="text-[10px] text-stone-400 hover:text-stone-600 underline px-1">Clear all</button>
+                <button onClick={() => setDates([])} className="text-[10px] text-stone-400 hover:text-stone-600 underline px-1">Clear all</button>
               )}
             </div>
           )}
@@ -517,7 +367,6 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
                   const auto = timesFromWindows(dates, dayTimeWindows);
                   if (auto.size > 0) { setSelectedTimes(auto); setTimesCustomized(false); }
                 }}
-                disabled={isRunning}
                 className="ml-auto text-[10px] text-stone-400 hover:text-stone-600 underline"
               >
                 Reset to settings
@@ -526,7 +375,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           </div>
           <div className="flex flex-wrap gap-1.5">
             {TIME_OPTIONS.map(t => (
-              <button key={t} onClick={() => toggleTime(t)} disabled={isRunning}
+              <button key={t} onClick={() => toggleTime(t)}
                 className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                   selectedTimes.has(t) ? "bg-charcoal text-white" : "bg-stone-100 text-stone-500 hover:bg-stone-200"
                 }`}>
@@ -539,11 +388,26 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           )}
         </div>
 
+        {/* Step 4: Drop time */}
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-5 h-5 rounded-full bg-charcoal text-white text-[10px] flex items-center justify-center font-bold shrink-0">4</span>
+            <span className="text-sm font-semibold text-charcoal">Drop time (ET)</span>
+            <span className="text-[10px] text-stone-400">when Resy opens booking</span>
+          </div>
+          <select value={scheduleDropTime} onChange={(e) => setScheduleDropTime(e.target.value)}
+            className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
+            {[...new Set([...DROP_TIME_OPTIONS, scheduleDropTime])].sort().map(t => (
+              <option key={t} value={t}>{formatTime12(t)} ET</option>
+            ))}
+          </select>
+        </div>
+
         {/* Party size + Advanced toggle */}
         <div className="flex items-center gap-3">
           <span className="text-xs text-stone-500 font-medium">Party:</span>
           {([2, 4] as const).map(size => (
-            <button key={size} onClick={() => setSnipePartySize(size)} disabled={isRunning}
+            <button key={size} onClick={() => setSnipePartySize(size)}
               className={`w-9 h-9 rounded-lg text-sm font-semibold transition-colors ${
                 snipePartySize === size ? "bg-charcoal text-white" : "bg-stone-100 text-stone-500 hover:bg-stone-200"
               }`}>
@@ -557,19 +421,10 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
 
         {/* Advanced options */}
         {showAdvanced && (
-          <div className="grid grid-cols-3 gap-3 bg-stone-50 border border-stone-100 rounded-xl p-3">
-            <div>
-              <label className="block text-xs text-stone-500 mb-1">Schedule drop (ET)</label>
-              <select value={scheduleDropTime} onChange={(e) => setScheduleDropTime(e.target.value)} disabled={isRunning}
-                className="w-full px-2 py-2 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
-                {[...new Set([...DROP_TIME_OPTIONS, scheduleDropTime])].sort().map(t => (
-                  <option key={t} value={t}>{formatTime12(t)} ET</option>
-                ))}
-              </select>
-            </div>
+          <div className="grid grid-cols-2 gap-3 bg-stone-50 border border-stone-100 rounded-xl p-3">
             <div>
               <label className="block text-xs text-stone-500 mb-1">Time flexibility</label>
-              <select value={timeRadius} onChange={(e) => setTimeRadius(Number(e.target.value))} disabled={isRunning}
+              <select value={timeRadius} onChange={(e) => setTimeRadius(Number(e.target.value))}
                 className="w-full px-2 py-2 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
                 <option value={15}>±15 min</option>
                 <option value={30}>±30 min</option>
@@ -579,7 +434,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
             </div>
             <div>
               <label className="block text-xs text-stone-500 mb-1">Snipe window</label>
-              <select value={snipeWindow} onChange={(e) => setSnipeWindow(Number(e.target.value))} disabled={isRunning}
+              <select value={snipeWindow} onChange={(e) => setSnipeWindow(Number(e.target.value))}
                 className="w-full px-2 py-2 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
                 <option value={15}>15 sec</option>
                 <option value={30}>30 sec</option>
@@ -590,30 +445,15 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           </div>
         )}
 
-        {/* Action buttons */}
-        {!isRunning ? (
-          <div className="space-y-2">
-            <button onClick={launchSnipe} disabled={!canLaunch}
-              className="w-full py-3.5 bg-charcoal text-white rounded-xl text-sm font-semibold hover:bg-charcoal/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-              {launchLabel}
-            </button>
-            {canLaunch && (
-              redisAvailable === false ? (
-                <div className="w-full py-2 text-center text-xs text-stone-400 border border-dashed border-stone-200 rounded-xl">
-                  Scheduling unavailable — add Upstash Redis env vars
-                </div>
-              ) : (
-                <button onClick={scheduleSnipe} disabled={schedulingInProgress || !authToken}
-                  className="w-full py-2.5 border border-stone-200 text-stone-600 rounded-xl text-sm font-medium hover:bg-stone-50 transition-colors disabled:opacity-50">
-                  {schedulingInProgress ? "Scheduling..." : `Schedule for ${formatTime12(scheduleDropTime)} ET`}
-                </button>
-              )
-            )}
+        {/* Primary action */}
+        {redisAvailable === false ? (
+          <div className="w-full py-3 text-center text-xs text-stone-400 border border-dashed border-stone-200 rounded-xl">
+            Scheduling unavailable — add Upstash Redis env vars
           </div>
         ) : (
-          <button onClick={cancelSnipe}
-            className="w-full py-3.5 bg-red-600 text-white rounded-xl text-sm font-semibold hover:bg-red-700 transition-colors">
-            Cancel Snipe
+          <button onClick={scheduleSnipe} disabled={!canSchedule || schedulingInProgress}
+            className="w-full py-3.5 bg-charcoal text-white rounded-xl text-sm font-semibold hover:bg-charcoal/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+            {scheduleLabel}
           </button>
         )}
 
@@ -656,34 +496,6 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           </div>
         )}
       </div>
-
-      {/* Event Log */}
-      {events.length > 0 && (
-        <div className="border-t border-stone-200">
-          <div ref={logRef} className="max-h-48 overflow-y-auto p-3 space-y-1 bg-stone-50 font-mono text-xs">
-            {events.map((event, i) => (
-              <div key={i} className={`flex items-start gap-2 ${
-                event.type === "booked" ? "text-emerald-600 font-bold" :
-                event.type === "error" || event.type === "book_failed" ? "text-red-500" :
-                event.type === "slots_found" ? "text-blue-600" : "text-stone-500"
-              }`}>
-                <span className="shrink-0">{getEventIcon(event.type)}</span>
-                <span>{getEventText(event)}</span>
-              </div>
-            ))}
-          </div>
-          {result === "success" && (
-            <div className="px-4 py-3 bg-emerald-50 border-t border-emerald-200 text-emerald-700 text-sm font-medium text-center">
-              Reservation booked!
-            </div>
-          )}
-          {result === "failed" && !isRunning && (
-            <div className="px-4 py-3 bg-red-50 border-t border-red-200 text-red-600 text-sm text-center">
-              No slot found. Try adjusting times, dates, or flexibility.
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
