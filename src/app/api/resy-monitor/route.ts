@@ -32,6 +32,7 @@ export const maxDuration = 120;
 
 let monitorState: MonitorState = createMonitorState();
 const venueIdCache = new Map<string, number>();
+const venueResolutionFailed = new Set<string>(); // IDs that returned no venue — skip on future polls
 let notificationConfig: NotificationConfig = {};
 // All restaurants polled every cycle (fast enough with 200-400ms gaps)
 
@@ -89,13 +90,18 @@ export async function POST(request: Request) {
     // Resolve missing venue IDs
     if (resolveIds) {
       const needsResolution = restaurants.filter(
-        (r) => r.resyVenueId === null && r.resyUrl !== null && !venueIdCache.has(r.id),
+        (r) => r.resyVenueId === null && r.resyUrl !== null && !venueIdCache.has(r.id) && !venueResolutionFailed.has(r.id),
       );
       for (const r of needsResolution) {
         const slug = r.resyUrl!.split("/venues/")[1];
-        if (!slug) continue;
+        if (!slug) { venueResolutionFailed.add(r.id); continue; }
         const venueId = await resolveVenueId(slug);
-        if (venueId) venueIdCache.set(r.id, venueId);
+        if (venueId) {
+          venueIdCache.set(r.id, venueId);
+        } else {
+          venueResolutionFailed.add(r.id);
+          console.warn(`[Monitor] Could not resolve venue ID for ${r.id} (${slug}) — skipping future resolution`);
+        }
         await delay(500 + Math.random() * 1000);
       }
     }

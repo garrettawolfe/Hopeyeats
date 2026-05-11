@@ -313,7 +313,7 @@ function HomeInner() {
         body: JSON.stringify({
           restaurantIds,
           dateLimits,
-          partySize: currentSettings?.partySize ?? 2,
+          partySize: currentSettings?.partySize ?? 4,
           resolveIds: true,
           notifications: buildNotificationConfig(),
           authToken: currentAuth?.authToken,
@@ -410,7 +410,7 @@ function HomeInner() {
                             restaurantName: event.restaurant,
                             date: event.date,
                             time: event.time,
-                            partySize: currentSettings?.partySize ?? 2,
+                            partySize: currentSettings?.partySize ?? 4,
                             status: event.success ? "success" : "failed",
                             error: event.error,
                             timestamp: new Date().toISOString(),
@@ -536,7 +536,7 @@ function HomeInner() {
         body: JSON.stringify({
           configToken: slot.configToken,
           date: slot.date,
-          partySize: settings?.partySize ?? 2,
+          partySize: settings?.partySize ?? 4,
           restaurantName: slot.venueName,
           time: slot.time,
           authToken: resyAuth?.authToken,
@@ -560,7 +560,7 @@ function HomeInner() {
 
       const log: BookingLog = {
         id: slot.id, restaurantName: slot.venueName, date: slot.date, time: slot.time,
-        partySize: settings?.partySize ?? 2, status: data.success ? "success" : "failed",
+        partySize: settings?.partySize ?? 4, status: data.success ? "success" : "failed",
         error: data.error, timestamp: new Date().toISOString(),
       };
       setBookingLog((prev) => [log, ...prev].slice(0, 50));
@@ -954,7 +954,7 @@ function HomeInner() {
               onClear={() => setDebugLog([])}
               resyAuth={resyAuth}
               profile={activeProfileName}
-              partySize={settings?.partySize ?? 2}
+              partySize={settings?.partySize ?? 4}
               monitoredCount={monitoredIds.size}
               monitoredNames={monitoredNames}
               autoBookNames={autoBookNames}
@@ -1007,7 +1007,7 @@ function HomeInner() {
               restaurants={resyRestaurants}
               isAuthenticated={resyAuth?.authenticated ?? false}
               authToken={resyAuth?.authToken}
-              partySize={settings.partySize ?? 2}
+              partySize={settings.partySize ?? 4}
               onLog={(level, msg, data) => addLog(level, "snipe", msg, data)}
               onBooked={(event) => {
                 addToast(`Sniped! ${event.restaurant} at ${event.time} on ${event.date}`, "success", 10000);
@@ -1016,7 +1016,7 @@ function HomeInner() {
                   restaurantName: String(event.restaurant),
                   date: String(event.date),
                   time: String(event.time),
-                  partySize: settings.partySize ?? 2,
+                  partySize: settings.partySize ?? 4,
                   status: "success" as const,
                   timestamp: new Date().toISOString(),
                 }, ...prev].slice(0, 50));
@@ -1137,7 +1137,7 @@ function HomeInner() {
                 onBook={handleBook}
                 bookingInProgress={bookingInProgress}
                 lastChecked={lastCheckedMap.get(r.id) ?? null}
-                partySize={settings?.partySize ?? 2}
+                partySize={settings?.partySize ?? 4}
                 lastBookingFailure={(() => {
                   // #13: Find most recent failure for this restaurant (only if no subsequent success)
                   const logs = bookingLog.filter(l => l.restaurantName === r.name);

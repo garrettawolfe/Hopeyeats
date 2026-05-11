@@ -51,10 +51,9 @@ export async function GET() {
     const safe = snipes.map(({ authToken: _a, ...rest }) => rest);
     return NextResponse.json({ snipes: safe });
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to list snipes" },
-      { status: 500 },
-    );
+    // Redis unavailable — return empty list so the UI doesn't break
+    console.error("[Scheduler] GET failed (Redis unavailable?):", err instanceof Error ? err.message : err);
+    return NextResponse.json({ snipes: [], warning: "Could not reach storage — scheduled snipes temporarily unavailable" });
   }
 }
 
