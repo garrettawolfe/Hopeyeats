@@ -12,49 +12,41 @@ import { updateScheduledSnipe } from "@/lib/scheduledSnipes";
 
 export const maxDuration = 120;
 
-/**
- * Verify that the request comes from QStash (prevents unauthorized triggers).
- */
 async function verifyQStash(request: Request, body: string): Promise<boolean> {
   const signingKey = process.env.QSTASH_CURRENT_SIGNING_KEY;
   const nextSigningKey = process.env.QSTASH_NEXT_SIGNING_KEY;
 
   if (!signingKey || !nextSigningKey) {
-    // If signing keys not set, allow in development
     if (process.env.NODE_ENV === "development") return true;
-    console.warn("[Cron] QStash signing keys not configured");
+    console.warn("[Cron] QStash signing keys not configured — rejecting request");
     return false;
   }
 
-  const receiver = new Receiver({
-    currentSigningKey: signingKey,
-    nextSigningKey: nextSigningKey,
-  });
+  const receiver = new Receiver({ currentSigningKey: signingKey, nextSigningKey: nextSigningKey });
 
   try {
     const signature = request.headers.get("upstash-signature") ?? "";
+    if (!signature) {
+      console.warn("[Cron] No upstash-signature header present");
+      return false;
+    }
     const isValid = await receiver.verify({ signature, body });
+    if (!isValid) console.warn("[Cron] QStash signature verification failed");
     return isValid;
-  } catch {
+  } catch (err) {
+    console.warn("[Cron] QStash signature error:", err instanceof Error ? err.message : String(err));
     return false;
   }
 }
 
 /**
  * POST /api/cron/snipe-scheduler
- *
- * Called by QStash at the scheduled drop time.
- * Runs the snipe synchronously (no streaming — this is server-side).
- *
- * Body: {
- *   snipeId, restaurantIds, dates, preferredTimes,
- *   timeRadius, snipeWindowSeconds, partySize, authToken
- * }
+ * Called by QStash at the scheduled drop time. Runs the snipe synchronously.
  */
 export async function POST(request: Request) {
+  const cronStart = Date.now();
   const bodyText = await request.text();
 
-  // Verify QStash signature
   const isVerified = await verifyQStash(request, bodyText);
   if (!isVerified) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -78,51 +70,74 @@ export async function POST(request: Request) {
     authToken,
   } = body;
 
+  // ── Validate inputs ───────────────────────────────────────────────────────
+
   if (!authToken) {
-    if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: "No auth token" });
+    console.error("[Cron] ABORT — no auth token in payload");
+    if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: "No auth token in payload" });
     return NextResponse.json({ error: "No auth token" }, { status: 401 });
   }
 
-  console.log(`[Cron] Starting scheduled snipe ${snipeId} — ${restaurantIds.length} restaurants, ${dates.length} dates`);
+  const targets = restaurants.filter((r) => restaurantIds.includes(r.id) && r.resyVenueId);
 
-  // Mark as running
-  if (snipeId) {
-    await updateScheduledSnipe(snipeId, { status: "running" });
+  if (targets.length === 0 || dates.length === 0) {
+    const reason = targets.length === 0
+      ? `No matching restaurants for IDs: [${restaurantIds.join(", ")}]`
+      : `No dates provided`;
+    console.error(`[Cron] ABORT — ${reason}`);
+    if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: reason });
+    return NextResponse.json({ error: reason }, { status: 400 });
   }
 
+  if (snipeWindowSeconds > 100) {
+    console.warn(`[Cron] snipeWindowSeconds=${snipeWindowSeconds} is close to Vercel's 120s limit — may timeout`);
+  }
+
+  // ── Log full config at start (critical for post-mortem) ───────────────────
+
+  console.log(`[Cron] START snipe=${snipeId} window=${snipeWindowSeconds}s party=${partySize}`);
+  console.log(`[Cron] Targets: ${targets.map((r) => r.name).join(", ")}`);
+  console.log(`[Cron] Dates: ${dates.join(", ")}`);
+  console.log(`[Cron] PreferredTimes: ${preferredTimes.join(", ")} ±${timeRadius}min`);
+
+  if (snipeId) await updateScheduledSnipe(snipeId, { status: "running" });
+
+  // ── Warmup + payment method ───────────────────────────────────────────────
+
   try {
-    // Warmup + prefetch payment
-    await Promise.all([
-      warmupConnection(authToken),
-      prefetchPaymentMethod(authToken),
-    ]);
+    await warmupConnection(authToken);
+  } catch (err) {
+    // Non-fatal — continue without warm cookies, just log it
+    console.warn("[Cron] Warmup failed (continuing without cookies):", err instanceof Error ? err.message : String(err));
+  }
 
-    const paymentMethodId = await prefetchPaymentMethod(authToken);
-    if (!paymentMethodId) {
-      if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: "No payment method" });
-      return NextResponse.json({ error: "No payment method" }, { status: 400 });
-    }
+  const paymentMethodId = await prefetchPaymentMethod(authToken);
+  if (!paymentMethodId) {
+    console.error("[Cron] ABORT — no payment method on Resy account (token may be expired)");
+    if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: "No payment method — auth token may be expired" });
+    return NextResponse.json({ error: "No payment method" }, { status: 400 });
+  }
 
-    const targets = restaurants.filter(
-      (r) => restaurantIds.includes(r.id) && r.resyVenueId,
-    );
+  console.log(`[Cron] Payment method confirmed: ${paymentMethodId}`);
 
-    if (targets.length === 0 || dates.length === 0) {
-      if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: "No valid targets or dates" });
-      return NextResponse.json({ error: "No valid targets or dates" }, { status: 400 });
-    }
+  // ── Snipe loop ────────────────────────────────────────────────────────────
 
-    resetConsecutiveErrors();
+  resetConsecutiveErrors();
 
-    const startTime = Date.now();
-    const deadline = startTime + snipeWindowSeconds * 1000;
-    let attempt = 0;
-    let booked = false;
-    let bookResult: { restaurant: string; date: string; time: string; reservationId?: string } | null = null;
-    const failedTokens = new Set<string>();
+  const startTime = Date.now();
+  const deadline = startTime + snipeWindowSeconds * 1000;
+  let loopCount = 0;
+  let apiCallCount = 0;
+  let totalSlotsFound = 0;
+  let totalSlotsMatched = 0;
+  let booked = false;
+  let bookResult: { restaurant: string; date: string; time: string; reservationId?: string } | null = null;
+  const failedTokens = new Set<string>();
+  let lastProgressLog = startTime;
 
+  try {
     while (Date.now() < deadline && !booked) {
-      attempt++;
+      loopCount++;
 
       for (const restaurant of targets) {
         if (booked) break;
@@ -131,6 +146,7 @@ export async function POST(request: Request) {
           if (booked) break;
 
           try {
+            apiCallCount++;
             const result = await findAvailability(
               restaurant.resyVenueId!,
               date,
@@ -138,7 +154,10 @@ export async function POST(request: Request) {
               authToken,
             );
 
-            if (!result) continue;
+            if (!result) {
+              console.warn(`[Cron] loop=${loopCount} ${restaurant.name} ${date} — null response (WAF/network?)`);
+              continue;
+            }
 
             const slots = parseSlots(
               result,
@@ -148,20 +167,22 @@ export async function POST(request: Request) {
               partySize,
             );
 
+            totalSlotsFound += slots.length;
+
             if (slots.length === 0) continue;
 
-            // Score and sort by preference
+            // Score slots against preferred times
             const scored = slots
               .filter((s) => !failedTokens.has(s.configToken))
               .map((s) => {
+                const slotMin = parseInt(s.time.split(":")[0]) * 60 + parseInt(s.time.split(":")[1]);
                 let score = 1000;
                 if (preferredTimes.length > 0) {
-                  const slotMin = parseInt(s.time.split(":")[0]) * 60 + parseInt(s.time.split(":")[1]);
                   for (let i = 0; i < preferredTimes.length; i++) {
                     const [ph, pm] = preferredTimes[i].split(":").map(Number);
-                    const prefMin = ph * 60 + pm;
-                    if (Math.abs(slotMin - prefMin) <= timeRadius) {
-                      score = i * 100 + Math.abs(slotMin - prefMin);
+                    const diff = Math.abs(slotMin - (ph * 60 + pm));
+                    if (diff <= timeRadius) {
+                      score = i * 100 + diff;
                       break;
                     }
                   }
@@ -173,13 +194,24 @@ export async function POST(request: Request) {
               .filter((s) => s.score < 1000)
               .sort((a, b) => a.score - b.score);
 
-            if (scored.length === 0) continue;
+            totalSlotsMatched += scored.length;
 
-            console.log(`[Cron] ${restaurant.name} (${date}): ${scored.length} matching slots, best: ${scored[0].slot.time}`);
+            if (scored.length === 0) {
+              // Slots exist but none in our time window — log so we know what was available
+              const availTimes = slots.map((s) => s.time).join(", ");
+              console.log(`[Cron] loop=${loopCount} ${restaurant.name} ${date} — ${slots.length} slots but none in window [${preferredTimes.join(",")} ±${timeRadius}m] — available: ${availTimes}`);
+              continue;
+            }
 
+            console.log(`[Cron] loop=${loopCount} ${restaurant.name} ${date} — ${scored.length} matching slots, best: ${scored[0].slot.time} (score=${scored[0].score})`);
+
+            // Attempt booking starting with best match
             for (const { slot } of scored) {
+              console.log(`[Cron] Booking attempt: ${restaurant.name} ${slot.time} on ${date} (token=${slot.configToken.slice(0, 20)}...)`);
+
               const details = await getSlotDetails(authToken, slot.configToken, date, partySize);
               if ("error" in details) {
+                console.warn(`[Cron] getSlotDetails failed for ${slot.time}: ${details.error}`);
                 failedTokens.add(slot.configToken);
                 continue;
               }
@@ -187,22 +219,26 @@ export async function POST(request: Request) {
               const booking = await bookReservation(authToken, details.bookToken, paymentMethodId);
               if (booking.success) {
                 booked = true;
-                bookResult = {
-                  restaurant: restaurant.name,
-                  date,
-                  time: slot.time,
-                  reservationId: booking.reservationId,
-                };
-                console.log(`[Cron] BOOKED! ${restaurant.name} at ${slot.time} on ${date}`);
+                bookResult = { restaurant: restaurant.name, date, time: slot.time, reservationId: booking.reservationId };
+                console.log(`[Cron] BOOKED — ${restaurant.name} at ${slot.time} on ${date} | reservationId=${booking.reservationId ?? "n/a"}`);
                 break;
               } else {
+                console.warn(`[Cron] bookReservation failed for ${slot.time}: ${booking.error}`);
                 failedTokens.add(slot.configToken);
               }
             }
           } catch (err) {
-            console.error(`[Cron] Error checking ${restaurant.name} on ${date}:`, err);
+            console.error(`[Cron] Error checking ${restaurant.name} on ${date}:`, err instanceof Error ? err.message : String(err));
           }
         }
+      }
+
+      // Periodic progress log every 10s so Vercel shows activity
+      const now = Date.now();
+      if (!booked && now - lastProgressLog >= 10_000) {
+        const elapsed = Math.round((now - startTime) / 1000);
+        console.log(`[Cron] Progress: ${elapsed}s elapsed, loop=${loopCount}, apiCalls=${apiCallCount}, slotsFound=${totalSlotsFound}, matched=${totalSlotsMatched}`);
+        lastProgressLog = now;
       }
 
       if (!booked) {
@@ -210,39 +246,30 @@ export async function POST(request: Request) {
       }
     }
 
-    const elapsed = Date.now() - startTime;
+    // ── Final summary ─────────────────────────────────────────────────────
 
-    if (snipeId) {
-      if (booked && bookResult) {
-        await updateScheduledSnipe(snipeId, {
-          status: "completed",
-          result: `Booked ${bookResult.restaurant} at ${bookResult.time} on ${bookResult.date} (${attempt} attempts, ${Math.round(elapsed / 1000)}s)`,
-        });
-      } else {
-        await updateScheduledSnipe(snipeId, {
-          status: "failed",
-          result: `No booking after ${attempt} attempts in ${Math.round(elapsed / 1000)}s`,
-        });
-      }
+    const totalElapsed = Date.now() - startTime;
+    const cronElapsed = Date.now() - cronStart;
+
+    if (booked && bookResult) {
+      const summary = `Booked ${bookResult.restaurant} at ${bookResult.time} on ${bookResult.date}`;
+      console.log(`[Cron] DONE ✓ ${summary} | loops=${loopCount} apiCalls=${apiCallCount} slotsFound=${totalSlotsFound} matched=${totalSlotsMatched} elapsed=${Math.round(totalElapsed / 1000)}s cronTotal=${Math.round(cronElapsed / 1000)}s`);
+      if (snipeId) await updateScheduledSnipe(snipeId, { status: "completed", result: `${summary} (${loopCount} loops, ${apiCallCount} API calls, ${Math.round(totalElapsed / 1000)}s)` });
+    } else {
+      const reason = totalSlotsFound === 0
+        ? "No slots returned by Resy"
+        : totalSlotsMatched === 0
+          ? `Slots found (${totalSlotsFound}) but none in preferred time window [${preferredTimes.join(",")} ±${timeRadius}m]`
+          : `Slots matched (${totalSlotsMatched}) but all booking attempts failed`;
+      console.log(`[Cron] DONE ✗ ${reason} | loops=${loopCount} apiCalls=${apiCallCount} slotsFound=${totalSlotsFound} matched=${totalSlotsMatched} elapsed=${Math.round(totalElapsed / 1000)}s cronTotal=${Math.round(cronElapsed / 1000)}s`);
+      if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: reason });
     }
 
-    return NextResponse.json({
-      booked,
-      bookResult,
-      attempts: attempt,
-      elapsed,
-    });
+    return NextResponse.json({ booked, bookResult, loops: loopCount, apiCalls: apiCallCount, elapsed: totalElapsed });
   } catch (err) {
-    console.error("[Cron] Snipe error:", err);
-    if (snipeId) {
-      await updateScheduledSnipe(snipeId, {
-        status: "failed",
-        result: err instanceof Error ? err.message : "Unknown error",
-      });
-    }
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Snipe error" },
-      { status: 500 },
-    );
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    console.error(`[Cron] FATAL error after ${Math.round((Date.now() - startTime) / 1000)}s: ${msg}`);
+    if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: `Fatal: ${msg}` });
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
