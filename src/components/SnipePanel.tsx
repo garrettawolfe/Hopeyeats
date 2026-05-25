@@ -82,11 +82,24 @@ function formatDateShort(dateStr: string): string {
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
-function getDropDate(restaurant: Restaurant): string | null {
+// Returns the dining date that will drop when the snipe fires at dropTime (ET).
+// Mirrors nextDropTimestamp logic: if dropTime already passed today ET, fires tomorrow.
+function getDropDate(restaurant: Restaurant, scheduleDropTime: string): string | null {
   if (!restaurant.advanceDays) return null;
-  const d = new Date();
-  d.setDate(d.getDate() + restaurant.advanceDays);
-  return d.toISOString().split("T")[0];
+  const [h, m] = scheduleDropTime.split(":").map(Number);
+  const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const todayDropET = new Date(nowET);
+  todayDropET.setHours(h, m, 0, 0);
+  // If the drop time has already passed today, the snipe fires tomorrow
+  const fireDateET = new Date(nowET);
+  if (todayDropET.getTime() <= nowET.getTime()) {
+    fireDateET.setDate(fireDateET.getDate() + 1);
+  }
+  fireDateET.setDate(fireDateET.getDate() + restaurant.advanceDays);
+  const y = fireDateET.getFullYear();
+  const mo = String(fireDateET.getMonth() + 1).padStart(2, "0");
+  const d = String(fireDateET.getDate()).padStart(2, "0");
+  return `${y}-${mo}-${d}`;
 }
 
 export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, dayTimeWindows, onLog }: Props) {
@@ -127,7 +140,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     const drops = new Set<string>();
     for (const id of selectedIds) {
       const r = restaurants.find(x => x.id === id);
-      if (r) { const dd = getDropDate(r); if (dd) drops.add(dd); }
+      if (r) { const dd = getDropDate(r, scheduleDropTime); if (dd) drops.add(dd); }
     }
     if (drops.size > 0) setDates(Array.from(drops).sort());
   }, [selectedIds, restaurants, datesCustomized]);
@@ -198,7 +211,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     const selected = restaurants.filter(r => selectedIds.has(r.id));
     const dropDates = new Set<string>(dates);
     for (const r of selected) {
-      const dd = getDropDate(r);
+      const dd = getDropDate(r, scheduleDropTime);
       if (dd) dropDates.add(dd);
     }
     setDates(Array.from(dropDates).sort());
@@ -292,7 +305,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           <div className="space-y-1.5 max-h-56 overflow-y-auto pr-0.5">
             {resyRestaurants.map(r => {
               const isSelected = selectedIds.has(r.id);
-              const dropDate = getDropDate(r);
+              const dropDate = getDropDate(r, scheduleDropTime);
               return (
                 <button key={r.id} onClick={() => toggleRestaurant(r.id)} className={sel(isSelected)}>
                   <span className="font-medium text-sm truncate">{r.name}</span>
@@ -448,7 +461,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
             .map(id => restaurants.find(r => r.id === id))
             .filter((r): r is NonNullable<typeof r> => !!r && !!r.bookingTime && !!r.advanceDays)
             .map(r => {
-              const dropDate = getDropDate(r)!;
+              const dropDate = getDropDate(r, scheduleDropTime)!;
               return dates.includes(dropDate) ? null : { name: r.name, dropDate, bookingTime: r.bookingTime! };
             })
             .filter((x): x is NonNullable<typeof x> => x !== null);
