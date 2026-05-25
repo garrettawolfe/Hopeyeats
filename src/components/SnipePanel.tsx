@@ -92,11 +92,8 @@ function getDropDate(restaurant: Restaurant): string | null {
 export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, dayTimeWindows, onLog }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [snipePartySize, setSnipePartySize] = useState(defaultPartySize);
-  const [dates, setDates] = useState<string[]>(() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    return [d.toISOString().split("T")[0]];
-  });
+  const [dates, setDates] = useState<string[]>([]);
+  const [datesCustomized, setDatesCustomized] = useState(false);
   const [dateInput, setDateInput] = useState("");
   const [selectedTimes, setSelectedTimes] = useState<Set<string>>(new Set(["19:00", "19:30", "20:00"]));
   const [timesCustomized, setTimesCustomized] = useState(false);
@@ -124,19 +121,16 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     if (parsed) setScheduleDropTime(parsed);
   }, [selectedIds, restaurants]);
 
-  // Auto-fill target dates from booking windows when restaurants are first selected
+  // Auto-fill target dates from booking windows whenever selection changes (unless user customized)
   useEffect(() => {
-    if (selectedIds.size === 0) return;
-    setDates(prev => {
-      if (prev.length > 0) return prev;
-      const drops = new Set<string>();
-      for (const id of selectedIds) {
-        const r = restaurants.find(x => x.id === id);
-        if (r) { const dd = getDropDate(r); if (dd) drops.add(dd); }
-      }
-      return drops.size > 0 ? Array.from(drops).sort() : prev;
-    });
-  }, [selectedIds, restaurants]);
+    if (selectedIds.size === 0 || datesCustomized) return;
+    const drops = new Set<string>();
+    for (const id of selectedIds) {
+      const r = restaurants.find(x => x.id === id);
+      if (r) { const dd = getDropDate(r); if (dd) drops.add(dd); }
+    }
+    if (drops.size > 0) setDates(Array.from(drops).sort());
+  }, [selectedIds, restaurants, datesCustomized]);
 
   const fetchScheduledSnipes = useCallback(async () => {
     try {
@@ -185,12 +179,14 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
 
   const addDate = (d: string) => {
     if (d && !dates.includes(d)) {
+      setDatesCustomized(true);
       setDates(prev => [...prev, d].sort());
     }
     setDateInput("");
   };
 
   const removeDate = (d: string) => {
+    setDatesCustomized(true);
     setDates(prev => prev.filter(x => x !== d));
   };
 
@@ -349,7 +345,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
                 </span>
               ))}
               {dates.length > 1 && (
-                <button onClick={() => setDates([])} className="text-[10px] text-stone-400 hover:text-stone-600 underline px-1">Clear all</button>
+                <button onClick={() => { setDates([]); setDatesCustomized(false); }} className="text-[10px] text-stone-400 hover:text-stone-600 underline px-1">Clear all</button>
               )}
             </div>
           )}
