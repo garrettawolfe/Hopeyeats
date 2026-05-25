@@ -124,6 +124,11 @@ export async function POST(request: Request) {
 
   resetConsecutiveErrors();
 
+  // Poll interval: 1200ms keeps single-restaurant snipes under Resy's WAF
+  // threshold (~50 req/IP/35s). Multi-restaurant snipes already space out
+  // naturally due to per-request jitter in findAvailability.
+  const POLL_INTERVAL_MS = 1200;
+
   const startTime = Date.now();
   const deadline = startTime + snipeWindowSeconds * 1000;
   let loopCount = 0;
@@ -134,10 +139,13 @@ export async function POST(request: Request) {
   let bookResult: { restaurant: string; date: string; time: string; reservationId?: string } | null = null;
   const failedTokens = new Set<string>();
   let lastProgressLog = startTime;
+  let wafEpisodes = 0; // how many times we've backed off due to WAF
 
   try {
     while (Date.now() < deadline && !booked) {
       loopCount++;
+      let nullsThisLoop = 0;
+      const callsThisLoop = targets.length * dates.length;
 
       for (const restaurant of targets) {
         if (booked) break;
@@ -155,7 +163,7 @@ export async function POST(request: Request) {
             );
 
             if (!result) {
-              console.warn(`[Cron] loop=${loopCount} ${restaurant.name} ${date} — null response (WAF/network?)`);
+              nullsThisLoop++;
               continue;
             }
 
@@ -233,16 +241,26 @@ export async function POST(request: Request) {
         }
       }
 
+      // WAF backoff: if every call in this loop returned null, the IP is blocked.
+      // Pause 12s and re-warm — hammering a blocked IP just wastes the window.
+      if (!booked && nullsThisLoop === callsThisLoop && callsThisLoop > 0) {
+        wafEpisodes++;
+        const remaining = Math.round((deadline - Date.now()) / 1000);
+        console.warn(`[Cron] WAF episode #${wafEpisodes} — all ${nullsThisLoop} calls blocked (loop=${loopCount}, ${remaining}s left). Pausing 12s and re-warming.`);
+        await new Promise((r) => setTimeout(r, 12_000));
+        try { await warmupConnection(authToken); } catch { /* non-fatal */ }
+      }
+
       // Periodic progress log every 10s so Vercel shows activity
       const now = Date.now();
       if (!booked && now - lastProgressLog >= 10_000) {
         const elapsed = Math.round((now - startTime) / 1000);
-        console.log(`[Cron] Progress: ${elapsed}s elapsed, loop=${loopCount}, apiCalls=${apiCallCount}, slotsFound=${totalSlotsFound}, matched=${totalSlotsMatched}`);
+        console.log(`[Cron] Progress: ${elapsed}s elapsed, loop=${loopCount}, apiCalls=${apiCallCount}, slotsFound=${totalSlotsFound}, matched=${totalSlotsMatched}, wafEpisodes=${wafEpisodes}`);
         lastProgressLog = now;
       }
 
       if (!booked) {
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       }
     }
 
@@ -253,15 +271,17 @@ export async function POST(request: Request) {
 
     if (booked && bookResult) {
       const summary = `Booked ${bookResult.restaurant} at ${bookResult.time} on ${bookResult.date}`;
-      console.log(`[Cron] DONE ✓ ${summary} | loops=${loopCount} apiCalls=${apiCallCount} slotsFound=${totalSlotsFound} matched=${totalSlotsMatched} elapsed=${Math.round(totalElapsed / 1000)}s cronTotal=${Math.round(cronElapsed / 1000)}s`);
+      console.log(`[Cron] DONE ✓ ${summary} | loops=${loopCount} apiCalls=${apiCallCount} slotsFound=${totalSlotsFound} matched=${totalSlotsMatched} wafEpisodes=${wafEpisodes} elapsed=${Math.round(totalElapsed / 1000)}s cronTotal=${Math.round(cronElapsed / 1000)}s`);
       if (snipeId) await updateScheduledSnipe(snipeId, { status: "completed", result: `${summary} (${loopCount} loops, ${apiCallCount} API calls, ${Math.round(totalElapsed / 1000)}s)` });
     } else {
       const reason = totalSlotsFound === 0
-        ? "No slots returned by Resy"
+        ? wafEpisodes > 0
+          ? `WAF blocked all requests (${wafEpisodes} episodes) — no slots retrieved`
+          : "No slots returned by Resy"
         : totalSlotsMatched === 0
           ? `Slots found (${totalSlotsFound}) but none in preferred time window [${preferredTimes.join(",")} ±${timeRadius}m]`
           : `Slots matched (${totalSlotsMatched}) but all booking attempts failed`;
-      console.log(`[Cron] DONE ✗ ${reason} | loops=${loopCount} apiCalls=${apiCallCount} slotsFound=${totalSlotsFound} matched=${totalSlotsMatched} elapsed=${Math.round(totalElapsed / 1000)}s cronTotal=${Math.round(cronElapsed / 1000)}s`);
+      console.log(`[Cron] DONE ✗ ${reason} | loops=${loopCount} apiCalls=${apiCallCount} slotsFound=${totalSlotsFound} matched=${totalSlotsMatched} wafEpisodes=${wafEpisodes} elapsed=${Math.round(totalElapsed / 1000)}s cronTotal=${Math.round(cronElapsed / 1000)}s`);
       if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: reason });
     }
 
