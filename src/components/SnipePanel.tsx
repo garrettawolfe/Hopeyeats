@@ -445,6 +445,30 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           </div>
         )}
 
+        {/* Date mismatch warning: target dates don't align with any restaurant's drop date */}
+        {(() => {
+          if (selectedIds.size === 0 || dates.length === 0) return null;
+          const mismatches = Array.from(selectedIds)
+            .map(id => restaurants.find(r => r.id === id))
+            .filter((r): r is NonNullable<typeof r> => !!r && !!r.bookingTime && !!r.advanceDays)
+            .map(r => {
+              const dropDate = getDropDate(r)!;
+              return dates.includes(dropDate) ? null : { name: r.name, dropDate, bookingTime: r.bookingTime! };
+            })
+            .filter((x): x is NonNullable<typeof x> => x !== null);
+          if (mismatches.length === 0) return null;
+          return (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-3.5 py-3 space-y-1.5">
+              <p className="text-xs font-semibold text-amber-800">Date mismatch — slots won&apos;t drop on your target date</p>
+              {mismatches.map(m => (
+                <p key={m.name} className="text-xs text-amber-700">
+                  <span className="font-medium">{m.name}</span> drops <span className="font-medium">{formatDateShort(m.dropDate)}</span> at {m.bookingTime} — that&apos;s not in your target dates. Add {formatDateShort(m.dropDate)} to catch the drop.
+                </p>
+              ))}
+            </div>
+          );
+        })()}
+
         {/* Primary action */}
         {redisAvailable === false ? (
           <div className="w-full py-3 text-center text-xs text-stone-400 border border-dashed border-stone-200 rounded-xl">

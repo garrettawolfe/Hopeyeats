@@ -122,6 +122,7 @@ function HomeInner() {
   const [lastPollTime, setLastPollTime] = useState<string | null>(null);
   const [, setTick] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const monitorPausedRef = useRef(false);
   const [scanProgress, setScanProgress] = useState<{ restaurant: string; index: number; total: number } | null>(null);
   const [activityFeed, setActivityFeed] = useState<ActivityItem[]>([]);
   const [autoBookIds, setAutoBookIds] = useState<Set<string>>(new Set());
@@ -134,6 +135,13 @@ function HomeInner() {
   const [activePartySize, setActivePartySize] = useState<2 | 4>(4);
   const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
   const [appMode, setAppMode] = useState<"monitor" | "snipe">("monitor");
+  // Keep ref in sync so poll() can check without re-mounting the effect
+  useEffect(() => {
+    monitorPausedRef.current = appMode === "snipe";
+    if (appMode === "snipe") addLog("debug", "poll", "Monitor paused — snipe mode active");
+    else addLog("debug", "poll", "Monitor resumed — back to availability mode");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appMode]);
   const [debugLog, setDebugLog] = useState<LogEntry[]>([]);
   const [showDebugLog, setShowDebugLog] = useState(false);
   const [consecutiveFails, setConsecutiveFails] = useState(0);
@@ -524,7 +532,9 @@ function HomeInner() {
         console.log(`[WolfePack] Backing off: ${Math.round(interval / 1000)}s (${fails} consecutive failures)`);
       }
       intervalRef.current = setTimeout(() => {
-        poll();
+        if (!monitorPausedRef.current) {
+          poll();
+        }
         scheduleNext();
       }, interval);
     };
