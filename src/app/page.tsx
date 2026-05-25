@@ -294,8 +294,10 @@ function HomeInner() {
       // Baseline: check everyone
       tier2 = allMonitor;
     } else {
-      // Rotate through monitor-only restaurants in groups of ~10
-      const GROUP_SIZE = 10;
+      // Rotate through monitor-only restaurants in groups of 5
+      // 10 was triggering WAF — 5 restaurants × ~2.6 dates ≈ 13 API calls,
+      // well under Resy's per-IP threshold (~50/5min)
+      const GROUP_SIZE = 5;
       const numGroups = Math.ceil(allMonitor.length / GROUP_SIZE);
       const groupIdx = cycle % Math.max(numGroups, 1);
       tier2 = allMonitor.slice(groupIdx * GROUP_SIZE, (groupIdx + 1) * GROUP_SIZE);
