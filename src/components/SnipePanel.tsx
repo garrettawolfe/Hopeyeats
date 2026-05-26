@@ -143,7 +143,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
       if (r) { const dd = getDropDate(r, scheduleDropTime); if (dd) drops.add(dd); }
     }
     if (drops.size > 0) setDates(Array.from(drops).sort());
-  }, [selectedIds, restaurants, datesCustomized]);
+  }, [selectedIds, restaurants, datesCustomized, scheduleDropTime]);
 
   const fetchScheduledSnipes = useCallback(async () => {
     try {

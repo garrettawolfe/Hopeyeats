@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import { Receiver } from "@upstash/qstash";
-import { findAvailability, parseSlots, resetConsecutiveErrors } from "@/lib/resyApi";
+import { findAvailability, parseSlots, resetConsecutiveErrors, warmUpImperva } from "@/lib/resyApi";
 import {
   getSlotDetails,
   bookReservation,
-  warmupConnection,
   prefetchPaymentMethod,
 } from "@/lib/resyBooking";
 import { restaurants } from "@/data/restaurants";
@@ -95,7 +94,7 @@ export async function POST(request: Request) {
 
   // ── Log full config at start (critical for post-mortem) ───────────────────
 
-  console.log(`[Cron] START snipe=${snipeId} window=${snipeWindowSeconds}s party=${partySize}`);
+  console.log(`[Cron] START snipe=${snipeId} window=${snipeWindowSeconds}s party=${partySize} token=...${authToken.slice(-6)}`);
   console.log(`[Cron] Targets: ${targets.map((r) => r.name).join(", ")}`);
   console.log(`[Cron] Dates: ${dates.join(", ")}`);
   console.log(`[Cron] PreferredTimes: ${preferredTimes.join(", ")} ±${timeRadius}min`);
@@ -105,9 +104,8 @@ export async function POST(request: Request) {
   // ── Warmup + payment method ───────────────────────────────────────────────
 
   try {
-    await warmupConnection(authToken);
+    await warmUpImperva();
   } catch (err) {
-    // Non-fatal — continue without warm cookies, just log it
     console.warn("[Cron] Warmup failed (continuing without cookies):", err instanceof Error ? err.message : String(err));
   }
 
@@ -123,6 +121,9 @@ export async function POST(request: Request) {
   // ── Snipe loop ────────────────────────────────────────────────────────────
 
   resetConsecutiveErrors();
+
+  const setupElapsed = Math.round((Date.now() - cronStart) / 1000);
+  console.log(`[Cron] Setup complete in ${setupElapsed}s — starting poll loop (effective window: ${snipeWindowSeconds - setupElapsed}s remaining)`);
 
   // Poll interval: 1200ms keeps single-restaurant snipes under Resy's WAF
   // threshold (~50 req/IP/35s). Multi-restaurant snipes already space out
@@ -248,7 +249,7 @@ export async function POST(request: Request) {
         const remaining = Math.round((deadline - Date.now()) / 1000);
         console.warn(`[Cron] WAF episode #${wafEpisodes} — all ${nullsThisLoop} calls blocked (loop=${loopCount}, ${remaining}s left). Pausing 12s and re-warming.`);
         await new Promise((r) => setTimeout(r, 12_000));
-        try { await warmupConnection(authToken); } catch { /* non-fatal */ }
+        try { await warmUpImperva(); } catch { /* non-fatal */ }
       }
 
       // Periodic progress log every 10s so Vercel shows activity
