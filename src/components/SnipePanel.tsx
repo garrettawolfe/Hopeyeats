@@ -243,6 +243,9 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
         const data = await res.json();
         onLog?.("info", `Snipe scheduled for ${formatTime12(scheduleDropTime)} ET`, { id: data.id });
         await fetchScheduledSnipes();
+        // Reset selection so the user doesn't accidentally schedule again
+        setSelectedIds(new Set());
+        setDatesCustomized(false);
       }
     } catch { /* silent */ }
     finally { setSchedulingInProgress(false); }
