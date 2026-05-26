@@ -111,7 +111,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
   const [selectedTimes, setSelectedTimes] = useState<Set<string>>(new Set(["19:00", "19:30", "20:00"]));
   const [timesCustomized, setTimesCustomized] = useState(false);
   const [timeRadius, setTimeRadius] = useState(30);
-  const [snipeWindow, setSnipeWindow] = useState(60);
+  const [snipeWindow, setSnipeWindow] = useState(90);
   const [scheduleDropTime, setScheduleDropTime] = useState("09:00");
   const [schedulingInProgress, setSchedulingInProgress] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -448,9 +448,9 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               <label className="block text-xs text-stone-500 mb-1">Snipe window</label>
               <select value={snipeWindow} onChange={(e) => setSnipeWindow(Number(e.target.value))}
                 className="w-full px-2 py-2 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
-                <option value={15}>15 sec</option>
                 <option value={30}>30 sec</option>
                 <option value={60}>60 sec</option>
+                <option value={90}>90 sec</option>
                 <option value={120}>2 min</option>
               </select>
             </div>

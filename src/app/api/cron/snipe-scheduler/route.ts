@@ -64,7 +64,7 @@ export async function POST(request: Request) {
     dates = [],
     preferredTimes = [],
     timeRadius = 30,
-    snipeWindowSeconds = 60,
+    snipeWindowSeconds = 90,
     partySize = 2,
     authToken,
   } = body;
@@ -125,9 +125,8 @@ export async function POST(request: Request) {
   const setupElapsed = Math.round((Date.now() - cronStart) / 1000);
   console.log(`[Cron] Setup complete in ${setupElapsed}s — starting poll loop (effective window: ${snipeWindowSeconds - setupElapsed}s remaining)`);
 
-  // Poll interval: 1200ms keeps single-restaurant snipes under Resy's WAF
-  // threshold (~50 req/IP/35s). Multi-restaurant snipes already space out
-  // naturally due to per-request jitter in findAvailability.
+  // 1200ms between loops stays under Resy's WAF threshold (~27 clean calls per ~35s window).
+  // findAvailability adds its own 150–800ms gaussian jitter on top of this.
   const POLL_INTERVAL_MS = 1200;
 
   const startTime = Date.now();
@@ -243,12 +242,14 @@ export async function POST(request: Request) {
       }
 
       // WAF backoff: if every call in this loop returned null, the IP is blocked.
-      // Pause 12s and re-warm — hammering a blocked IP just wastes the window.
+      // Exponential backoff (3s → 4.5s → 6.75s → capped at 8s) — much shorter than
+      // the previous flat 12s. 5 episodes now cost ~30s instead of 60s.
       if (!booked && nullsThisLoop === callsThisLoop && callsThisLoop > 0) {
         wafEpisodes++;
+        const backoffMs = Math.min(3_000 * Math.pow(1.5, wafEpisodes - 1), 8_000);
         const remaining = Math.round((deadline - Date.now()) / 1000);
-        console.warn(`[Cron] WAF episode #${wafEpisodes} — all ${nullsThisLoop} calls blocked (loop=${loopCount}, ${remaining}s left). Pausing 12s and re-warming.`);
-        await new Promise((r) => setTimeout(r, 12_000));
+        console.warn(`[Cron] WAF episode #${wafEpisodes} — all ${nullsThisLoop} calls blocked (loop=${loopCount}, ${remaining}s left). Backing off ${(backoffMs / 1000).toFixed(1)}s then re-warming.`);
+        await new Promise((r) => setTimeout(r, backoffMs));
         try { await warmUpImperva(); } catch { /* non-fatal */ }
       }
 
@@ -278,7 +279,7 @@ export async function POST(request: Request) {
       const reason = totalSlotsFound === 0
         ? wafEpisodes > 0
           ? `WAF blocked all requests (${wafEpisodes} episodes) — no slots retrieved`
-          : "No slots returned by Resy"
+          : `API returned 200 but no slots found (${apiCallCount} calls) — verify drop time or slots were grabbed instantly`
         : totalSlotsMatched === 0
           ? `Slots found (${totalSlotsFound}) but none in preferred time window [${preferredTimes.join(",")} ±${timeRadius}m]`
           : `Slots matched (${totalSlotsMatched}) but all booking attempts failed`;
