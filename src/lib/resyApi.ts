@@ -440,6 +440,10 @@ export interface ResySlot {
     type: string;
     is_visible?: boolean;
   };
+  // exclusive.id != 0 means Crown/GDA/invite-only — not publicly bookable
+  exclusive?: {
+    id: number;
+  };
   size: {
     min: number;
     max: number;
@@ -698,12 +702,18 @@ export function parseSlots(
   const venue = venues[0];
   const slots = venue.slots ?? [];
 
-  // Filter out invisible slots — these are Crown/exclusive-gated reservations
-  // that the server exposes in the response but marks as not publicly bookable.
-  const visibleSlots = slots.filter((slot) => slot.config?.is_visible !== false);
+  // Filter out Crown/exclusive-gated slots before attempting /3/details calls.
+  // Two complementary signals (either is sufficient to skip):
+  //   - exclusive.id != 0  → slot requires Crown/GDA/invite-only membership
+  //   - config.is_visible === false → server marks slot as non-public in the UI
+  const visibleSlots = slots.filter((slot) => {
+    const isExclusive = (slot.exclusive?.id ?? 0) !== 0;
+    const isHidden = slot.config?.is_visible === false;
+    return !isExclusive && !isHidden;
+  });
   const hiddenCount = slots.length - visibleSlots.length;
   if (hiddenCount > 0) {
-    console.log(`[Resy] ${venueName}: ${hiddenCount} Crown/exclusive slot(s) hidden (is_visible=false), ${visibleSlots.length} public slot(s) remain`);
+    console.log(`[Resy] ${venueName}: skipping ${hiddenCount} Crown/exclusive slot(s) (exclusive.id≠0 or is_visible=false), ${visibleSlots.length} public slot(s) remain`);
   }
 
   return visibleSlots.map((slot) => {
