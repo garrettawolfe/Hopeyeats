@@ -155,6 +155,8 @@ export async function POST(request: Request) {
   let booked = false;
   let bookResult: { restaurant: string; date: string; time: string; reservationId?: string } | null = null;
   const failedTokens = new Set<string>();
+  const tokenAttempts = new Map<string, number>(); // track getSlotDetails failures before blacklisting
+  const lastAvailableTimes = new Map<string, string>(); // deduplicate "no match" log lines
   let lastProgressLog = startTime;
   let wafEpisodes = 0; // how many times we've backed off due to WAF
 
@@ -222,9 +224,15 @@ export async function POST(request: Request) {
             totalSlotsMatched += scored.length;
 
             if (scored.length === 0) {
-              // Slots exist but none in our time window — log so we know what was available
+              // Only log when the available set changes (avoids 40+ identical lines per snipe)
               const availTimes = slots.map((s) => s.time).join(", ");
-              console.log(`[Cron] loop=${loopCount} ${restaurant.name} ${date} — ${slots.length} slots but none in window [${preferredTimes.join(",")} ±${timeRadius}m] — available: ${availTimes}`);
+              const logKey = `${restaurant.id}:${date}`;
+              if (lastAvailableTimes.get(logKey) !== availTimes) {
+                const prev = lastAvailableTimes.get(logKey);
+                const changeNote = prev ? ` (was: ${prev})` : "";
+                console.log(`[Cron] loop=${loopCount} ${restaurant.name} ${date} — ${slots.length} slots but none in window [${preferredTimes.join(",")} ±${timeRadius}m] — available: ${availTimes}${changeNote}`);
+                lastAvailableTimes.set(logKey, availTimes);
+              }
               continue;
             }
 
@@ -236,8 +244,17 @@ export async function POST(request: Request) {
 
               const details = await getSlotDetails(authToken, slot.configToken, date, partySize);
               if ("error" in details) {
-                console.warn(`[Cron] getSlotDetails failed for ${slot.time}: ${details.error}`);
-                failedTokens.add(slot.configToken);
+                // Don't permanently blacklist on first failure — the slot may have been
+                // briefly locked in checkout and released (code 1026). Allow one retry;
+                // only permanently skip after 2 consecutive failures on the same token.
+                const attempts = (tokenAttempts.get(slot.configToken) ?? 0) + 1;
+                tokenAttempts.set(slot.configToken, attempts);
+                if (attempts >= 2) {
+                  failedTokens.add(slot.configToken);
+                  console.warn(`[Cron] getSlotDetails failed ${attempts}x for ${slot.time} — blacklisting token: ${details.error}`);
+                } else {
+                  console.warn(`[Cron] getSlotDetails failed for ${slot.time} (attempt ${attempts}/2, will retry): ${details.error}`);
+                }
                 continue;
               }
 
