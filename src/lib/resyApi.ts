@@ -438,6 +438,7 @@ export interface ResySlot {
     id: number;
     token: string;
     type: string;
+    is_visible?: boolean;
   };
   size: {
     min: number;
@@ -697,7 +698,15 @@ export function parseSlots(
   const venue = venues[0];
   const slots = venue.slots ?? [];
 
-  return slots.map((slot) => {
+  // Filter out invisible slots — these are Crown/exclusive-gated reservations
+  // that the server exposes in the response but marks as not publicly bookable.
+  const visibleSlots = slots.filter((slot) => slot.config?.is_visible !== false);
+  const hiddenCount = slots.length - visibleSlots.length;
+  if (hiddenCount > 0) {
+    console.log(`[Resy] ${venueName}: ${hiddenCount} Crown/exclusive slot(s) hidden (is_visible=false), ${visibleSlots.length} public slot(s) remain`);
+  }
+
+  return visibleSlots.map((slot) => {
     const dateTime = slot.date?.start ?? "";
     const [datePart, timePart] = dateTime.split(" ");
     const time = timePart ? timePart.substring(0, 5) : "";
