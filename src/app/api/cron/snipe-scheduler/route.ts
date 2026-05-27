@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { Receiver } from "@upstash/qstash";
-import { findAvailability, parseSlots, resetConsecutiveErrors, warmUpImperva } from "@/lib/resyApi";
+import { findAvailability, parseSlots, resetConsecutiveErrors, warmUpImperva, importCookiesFromPrewarm } from "@/lib/resyApi";
 import {
   getSlotDetails,
   bookReservation,
   prefetchPaymentMethod,
 } from "@/lib/resyBooking";
 import { restaurants } from "@/data/restaurants";
-import { updateScheduledSnipe } from "@/lib/scheduledSnipes";
+import { updateScheduledSnipe, loadPrewarmCookies } from "@/lib/scheduledSnipes";
 
 export const maxDuration = 120;
 
@@ -101,7 +101,24 @@ export async function POST(request: Request) {
 
   if (snipeId) await updateScheduledSnipe(snipeId, { status: "running" });
 
-  // ── Warmup + payment method ───────────────────────────────────────────────
+  // ── Load pre-warm cookies from Redis, then warmup ────────────────────────
+  // Pre-warm fires 90s before this and saves its Imperva cookies to Redis.
+  // If the same Vercel region handles both requests, loading them here means
+  // we skip a redundant warmup and start with fresh WAF cookies immediately.
+
+  if (snipeId) {
+    try {
+      const cached = await loadPrewarmCookies(snipeId);
+      if (cached && Object.keys(cached).length > 0) {
+        importCookiesFromPrewarm(cached);
+        console.log(`[Cron] Pre-warm cookies loaded from Redis — skipping redundant warmup`);
+      } else {
+        console.log(`[Cron] No pre-warm cookies in Redis — will warm up fresh`);
+      }
+    } catch (err) {
+      console.warn("[Cron] Could not load pre-warm cookies from Redis (non-fatal):", err instanceof Error ? err.message : String(err));
+    }
+  }
 
   try {
     await warmUpImperva();

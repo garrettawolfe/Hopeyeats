@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { Receiver } from "@upstash/qstash";
-import { warmUpImperva, hasValidCookies } from "@/lib/resyApi";
+import { warmUpImperva, hasValidCookies, exportCookies } from "@/lib/resyApi";
+import { savePrewarmCookies } from "@/lib/scheduledSnipes";
 
 export const maxDuration = 30;
 
@@ -47,6 +48,12 @@ export async function POST(request: Request) {
     await warmUpImperva();
     const valid = hasValidCookies();
     console.log(`[Prewarm] Done — cookies valid=${valid}`);
+
+    if (valid && snipeId !== "unknown") {
+      const cookies = exportCookies();
+      await savePrewarmCookies(snipeId, cookies);
+      console.log(`[Prewarm] Cookies saved to Redis for snipe=${snipeId} — snipe scheduler will load them at startup`);
+    }
   } catch (err) {
     console.warn(`[Prewarm] Failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }

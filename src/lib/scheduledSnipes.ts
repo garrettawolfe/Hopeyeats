@@ -86,6 +86,33 @@ export async function getScheduledSnipe(id: string): Promise<ScheduledSnipe | nu
   return snipes.find((s) => s.id === id) ?? null;
 }
 
+// ─── Cookie Persistence (Pre-warm → Snipe handoff) ────────────────────────
+// Pre-warm saves Imperva cookies to Redis; snipe loads them on startup.
+// TTL of 3 minutes: long enough to bridge the 90s gap, short enough to
+// prevent stale cookies accumulating.
+
+export async function savePrewarmCookies(
+  snipeId: string,
+  cookies: Record<string, string>,
+): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  await r.set(`wolfepack:cookies:${snipeId}`, cookies, { ex: 180 });
+  console.log(`[Redis] Saved ${Object.keys(cookies).length} pre-warm cookies for snipe=${snipeId}`);
+}
+
+export async function loadPrewarmCookies(
+  snipeId: string,
+): Promise<Record<string, string> | null> {
+  const r = getRedis();
+  if (!r) return null;
+  const cookies = await r.get<Record<string, string>>(`wolfepack:cookies:${snipeId}`);
+  if (cookies && Object.keys(cookies).length > 0) {
+    console.log(`[Redis] Loaded ${Object.keys(cookies).length} pre-warm cookies for snipe=${snipeId}`);
+  }
+  return cookies;
+}
+
 // ─── Cleanup: Remove old completed/failed snipes ───────────────────────────
 
 export async function cleanupOldSnipes(): Promise<number> {

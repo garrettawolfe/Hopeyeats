@@ -154,6 +154,27 @@ export function getCookieHeader(): string | null {
     .join("; ");
 }
 
+/** Export the current cookie jar as a plain object (for Redis persistence). */
+export function exportCookies(): Record<string, string> {
+  return Object.fromEntries(cookieJar.entries());
+}
+
+/**
+ * Import cookies from the pre-warm Redis cache and mark them as trusted.
+ * Calling this before warmUpImperva() prevents the warmup from discarding them.
+ */
+export function importCookiesFromPrewarm(cookies: Record<string, string>): void {
+  cookieJar.clear();
+  for (const [name, value] of Object.entries(cookies)) {
+    cookieJar.set(name, value);
+  }
+  // Tell warmUpImperva() these cookies are known-good — skip re-warming
+  lastPollHadSuccess = true;
+  lastWarmUpAt = Date.now();
+  const names = Object.keys(cookies).join(", ");
+  console.log(`[Resy] Loaded ${Object.keys(cookies).length} cookies from pre-warm cache: [${names}]`);
+}
+
 // ─── Proxy Support ──────────────────────────────────────────────────────────
 
 interface ProxyConfig {
