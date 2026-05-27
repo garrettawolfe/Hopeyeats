@@ -627,6 +627,15 @@ export async function findAvailability(
   const slotCount = data.results?.venues?.[0]?.slots?.length ?? 0;
   if (slotCount > 0 && rateLimitState.pollRequestCount <= 5) {
     console.log(`[Resy] Found ${slotCount} slots venue=${venueId} date=${date}`);
+    // Log raw structure of first slot once per session to capture unknown fields
+    // (helps identify Crown/access-restricted slots we're not parsing yet)
+    if (rateLimitState.pollRequestCount === 1) {
+      const rawSlot = (data as unknown as { results: { venues: { slots: unknown[] }[] } })
+        .results?.venues?.[0]?.slots?.[0];
+      if (rawSlot) {
+        console.log(`[Resy] Raw slot[0] venue=${venueId}: ${JSON.stringify(rawSlot)}`);
+      }
+    }
   }
   return data;
 }
