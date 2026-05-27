@@ -297,15 +297,19 @@ export async function getSlotDetails(
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      // #10: Log timing with status for attribution
-      // 403 with code 1026 = slot unavailable/taken or venue requires special booking
-      // 500 with request-id = Resy internal error (transient)
-      const reason = response.status === 403 ? "slot unavailable or venue requires deposit"
-        : response.status === 412 ? "slot already booked"
-        : response.status === 500 ? "Resy internal error"
-        : `HTTP ${response.status}`;
-      console.error(`[ResyBook] Details ${response.status} in ${detailsMs}ms (${reason}) — ${text.slice(0, 300)}`);
-      return { error: `${reason} (${detailsMs}ms)` } as SlotDetailsError;
+      // Extract Resy error code from JSON body: {"message":"...", "code": 1026}
+      let resyCode: number | null = null;
+      try { resyCode = JSON.parse(text)?.code ?? null; } catch { /* ignore */ }
+      const codeTag = resyCode !== null ? ` code=${resyCode}` : "";
+      // 403/1026 = slot locked in checkout (race) or requires exclusive membership
+      // 412 = slot already fully booked
+      // 500 = Resy internal error (transient)
+      const reason = response.status === 403 ? `slot locked/exclusive${codeTag}`
+        : response.status === 412 ? `slot already booked${codeTag}`
+        : response.status === 500 ? `Resy internal error${codeTag}`
+        : `HTTP ${response.status}${codeTag}`;
+      console.error(`[ResyBook] Details ${response.status} in ${detailsMs}ms (${reason}) — ${text.slice(0, 200)}`);
+      return { error: reason } as SlotDetailsError;
     }
 
     const data = await response.json();
@@ -394,15 +398,21 @@ export async function bookReservation(
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      const statusLabel = response.status === 412 ? "slot already booked or token expired"
-        : response.status === 403 ? "slot unavailable or venue requires deposit"
-        : response.status === 409 ? "booking conflict"
-        : `HTTP ${response.status}`;
-      console.error(`[ResyBook] Booking failed: ${response.status} — ${text}`);
-      return {
-        success: false,
-        error: `${statusLabel}. ${text}`.trim(),
-      };
+      let resyCode: number | null = null;
+      let resyMsg = "";
+      try {
+        const parsed = JSON.parse(text);
+        resyCode = parsed?.code ?? null;
+        resyMsg = parsed?.message ?? "";
+      } catch { /* ignore */ }
+      const codeTag = resyCode !== null ? ` code=${resyCode}` : "";
+      const statusLabel = response.status === 412 ? `slot already booked or token expired${codeTag}`
+        : response.status === 403 ? `slot unavailable or requires membership${codeTag}`
+        : response.status === 409 ? `booking conflict${codeTag}`
+        : `HTTP ${response.status}${codeTag}`;
+      const detail = resyMsg || text.slice(0, 150);
+      console.error(`[ResyBook] Booking failed: ${response.status}${codeTag} — ${detail}`);
+      return { success: false, error: `${statusLabel}${resyMsg ? `: ${resyMsg}` : ""}`.trim() };
     }
 
     const data = await response.json();

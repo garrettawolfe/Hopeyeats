@@ -157,8 +157,13 @@ export async function POST(request: Request) {
   const failedTokens = new Set<string>();
   const tokenAttempts = new Map<string, number>(); // track getSlotDetails failures before blacklisting
   const lastAvailableTimes = new Map<string, string>(); // deduplicate "no match" log lines
+  const slotFirstSeen = new Map<string, number>(); // configToken → ms since startTime when first seen
   let lastProgressLog = startTime;
   let wafEpisodes = 0; // how many times we've backed off due to WAF
+  // Failure type counters for final summary diagnosis
+  let failCount403 = 0;
+  let failCount412 = 0;
+  let failCountOther = 0;
 
   try {
     while (Date.now() < deadline && !booked) {
@@ -198,7 +203,16 @@ export async function POST(request: Request) {
 
             if (slots.length === 0) continue;
 
+            // Track first time we see each slot token (for post-mortem timing)
+            const elapsedMs = Date.now() - startTime;
+            for (const s of slots) {
+              if (!slotFirstSeen.has(s.configToken)) {
+                slotFirstSeen.set(s.configToken, elapsedMs);
+              }
+            }
+
             // Score slots against preferred times
+            const blacklistedInWindow = slots.filter((s) => failedTokens.has(s.configToken));
             const scored = slots
               .filter((s) => !failedTokens.has(s.configToken))
               .map((s) => {
@@ -221,6 +235,12 @@ export async function POST(request: Request) {
               .filter((s) => s.score < 1000)
               .sort((a, b) => a.score - b.score);
 
+            // Log when blacklisted tokens are occupying the only matching slots
+            if (blacklistedInWindow.length > 0 && scored.length === 0) {
+              const blacklistedTimes = blacklistedInWindow.map((s) => s.time).join(", ");
+              console.warn(`[Cron] loop=${loopCount} ${restaurant.name} ${date} — ${blacklistedInWindow.length} matching slot(s) SKIPPED (previously failed tokens): ${blacklistedTimes}`);
+            }
+
             totalSlotsMatched += scored.length;
 
             if (scored.length === 0) {
@@ -236,11 +256,14 @@ export async function POST(request: Request) {
               continue;
             }
 
-            console.log(`[Cron] loop=${loopCount} ${restaurant.name} ${date} — ${scored.length} matching slots, best: ${scored[0].slot.time} (score=${scored[0].score})`);
+            const elapsedSec = Math.round(elapsedMs / 1000);
+            console.log(`[Cron] loop=${loopCount} T+${elapsedSec}s ${restaurant.name} ${date} — ${scored.length} matching slots, best: ${scored[0].slot.time} (score=${scored[0].score})`);
 
             // Attempt booking starting with best match
             for (const { slot } of scored) {
-              console.log(`[Cron] Booking attempt: ${restaurant.name} ${slot.time} on ${date} (token=${slot.configToken.slice(0, 20)}...)`);
+              const firstSeenMs = slotFirstSeen.get(slot.configToken) ?? elapsedMs;
+              const firstSeenSec = Math.round(firstSeenMs / 1000);
+              console.log(`[Cron] Booking attempt T+${elapsedSec}s (first seen T+${firstSeenSec}s): ${restaurant.name} ${slot.time} on ${date} (token=${slot.configToken.slice(0, 20)}...)`);
 
               const details = await getSlotDetails(authToken, slot.configToken, date, partySize);
               if ("error" in details) {
@@ -249,6 +272,10 @@ export async function POST(request: Request) {
                 // only permanently skip after 2 consecutive failures on the same token.
                 const attempts = (tokenAttempts.get(slot.configToken) ?? 0) + 1;
                 tokenAttempts.set(slot.configToken, attempts);
+                // Classify the error for final summary
+                if (details.error.includes("403") || details.error.includes("locked") || details.error.includes("exclusive")) failCount403++;
+                else if (details.error.includes("412") || details.error.includes("already booked")) failCount412++;
+                else failCountOther++;
                 if (attempts >= 2) {
                   failedTokens.add(slot.configToken);
                   console.warn(`[Cron] getSlotDetails failed ${attempts}x for ${slot.time} — blacklisting token: ${details.error}`);
@@ -262,9 +289,13 @@ export async function POST(request: Request) {
               if (booking.success) {
                 booked = true;
                 bookResult = { restaurant: restaurant.name, date, time: slot.time, reservationId: booking.reservationId };
-                console.log(`[Cron] BOOKED — ${restaurant.name} at ${slot.time} on ${date} | reservationId=${booking.reservationId ?? "n/a"}`);
+                const firstSeenNote = firstSeenSec !== elapsedSec ? ` (slot first seen T+${firstSeenSec}s)` : "";
+                console.log(`[Cron] BOOKED — ${restaurant.name} at ${slot.time} on ${date} | reservationId=${booking.reservationId ?? "n/a"} | T+${elapsedSec}s${firstSeenNote}`);
                 break;
               } else {
+                if (booking.error?.includes("412") || booking.error?.includes("already booked") || booking.error?.includes("token expired")) failCount412++;
+                else if (booking.error?.includes("403") || booking.error?.includes("unavailable") || booking.error?.includes("membership")) failCount403++;
+                else failCountOther++;
                 console.warn(`[Cron] bookReservation failed for ${slot.time}: ${booking.error}`);
                 failedTokens.add(slot.configToken);
               }
@@ -310,13 +341,16 @@ export async function POST(request: Request) {
       console.log(`[Cron] DONE ✓ ${summary} | loops=${loopCount} apiCalls=${apiCallCount} slotsFound=${totalSlotsFound} matched=${totalSlotsMatched} wafEpisodes=${wafEpisodes} elapsed=${Math.round(totalElapsed / 1000)}s cronTotal=${Math.round(cronElapsed / 1000)}s`);
       if (snipeId) await updateScheduledSnipe(snipeId, { status: "completed", result: `${summary} (${loopCount} loops, ${apiCallCount} API calls, ${Math.round(totalElapsed / 1000)}s)` });
     } else {
+      const failBreakdown = (failCount403 + failCount412 + failCountOther) > 0
+        ? ` [failures: ${failCount403} locked/exclusive, ${failCount412} already-booked, ${failCountOther} other]`
+        : "";
       const reason = totalSlotsFound === 0
         ? wafEpisodes > 0
           ? `WAF blocked all requests (${wafEpisodes} episodes) — no slots retrieved`
           : `API returned 200 but no slots found (${apiCallCount} calls) — verify drop time or slots were grabbed instantly`
         : totalSlotsMatched === 0
-          ? `Slots found (${totalSlotsFound}) but none in preferred time window [${preferredTimes.join(",")} ±${timeRadius}m]`
-          : `Slots matched (${totalSlotsMatched}) but all booking attempts failed`;
+          ? `Slots found (${totalSlotsFound}) but none matched preferred times [${preferredTimes.join(",")} ±${timeRadius}m]`
+          : `Slots matched (${totalSlotsMatched}) but all booking attempts failed${failBreakdown}`;
       console.log(`[Cron] DONE ✗ ${reason} | loops=${loopCount} apiCalls=${apiCallCount} slotsFound=${totalSlotsFound} matched=${totalSlotsMatched} wafEpisodes=${wafEpisodes} elapsed=${Math.round(totalElapsed / 1000)}s cronTotal=${Math.round(cronElapsed / 1000)}s`);
       if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: reason });
     }
