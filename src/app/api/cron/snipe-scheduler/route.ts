@@ -5,6 +5,7 @@ import {
   getSlotDetails,
   bookReservation,
   prefetchPaymentMethod,
+  type SlotDetails,
 } from "@/lib/resyBooking";
 import { restaurants } from "@/data/restaurants";
 import { updateScheduledSnipe, loadPrewarmCookies } from "@/lib/scheduledSnipes";
@@ -257,48 +258,71 @@ export async function POST(request: Request) {
             }
 
             const elapsedSec = Math.round(elapsedMs / 1000);
-            console.log(`[Cron] loop=${loopCount} T+${elapsedSec}s ${restaurant.name} ${date} — ${scored.length} matching slots, best: ${scored[0].slot.time} (score=${scored[0].score})`);
+            console.log(`[Cron] loop=${loopCount} T+${elapsedSec}s ${restaurant.name} ${date} — ${scored.length} matching slot(s), racing details in parallel (best: ${scored[0].slot.time} score=${scored[0].score})`);
 
-            // Attempt booking starting with best match
-            for (const { slot } of scored) {
-              const firstSeenMs = slotFirstSeen.get(slot.configToken) ?? elapsedMs;
-              const firstSeenSec = Math.round(firstSeenMs / 1000);
-              console.log(`[Cron] Booking attempt T+${elapsedSec}s (first seen T+${firstSeenSec}s): ${restaurant.name} ${slot.time} on ${date} (token=${slot.configToken.slice(0, 20)}...)`);
+            // Pre-flight warmup once before the parallel race so each getSlotDetails
+            // call doesn't redundantly trigger its own concurrent warmup.
+            try { await warmUpImperva(); } catch { /* non-fatal */ }
 
-              const details = await getSlotDetails(authToken, slot.configToken, date, partySize);
+            // Race all matched slots' /3/details calls simultaneously.
+            // Sequential approach wastes ~200ms per failing slot; parallel gives us the
+            // best-scored winner in one round-trip (~200ms total regardless of N slots).
+            const raceStart = Date.now();
+            const raceResults = await Promise.allSettled(
+              scored.map(async ({ slot }) => {
+                const details = await getSlotDetails(authToken, slot.configToken, date, partySize);
+                return { slot, details };
+              })
+            );
+            const raceMs = Date.now() - raceStart;
+
+            // Process results in score order (allSettled preserves input order).
+            // Track all failures, book the first (best-scored) success.
+            let bookableWinner: { slot: typeof scored[0]["slot"]; details: SlotDetails } | null = null;
+
+            for (const result of raceResults) {
+              if (result.status === "rejected") {
+                failCountOther++;
+                console.warn(`[Cron] getSlotDetails threw unexpectedly: ${result.reason}`);
+                continue;
+              }
+              const { slot, details } = result.value;
               if ("error" in details) {
-                // Don't permanently blacklist on first failure — the slot may have been
-                // briefly locked in checkout and released (code 1026). Allow one retry;
-                // only permanently skip after 2 consecutive failures on the same token.
                 const attempts = (tokenAttempts.get(slot.configToken) ?? 0) + 1;
                 tokenAttempts.set(slot.configToken, attempts);
-                // Classify the error for final summary
-                if (details.error.includes("403") || details.error.includes("locked") || details.error.includes("exclusive")) failCount403++;
+                if (details.error.includes("locked") || details.error.includes("exclusive") || details.error.includes("403")) failCount403++;
                 else if (details.error.includes("412") || details.error.includes("already booked")) failCount412++;
                 else failCountOther++;
                 if (attempts >= 2) {
                   failedTokens.add(slot.configToken);
-                  console.warn(`[Cron] getSlotDetails failed ${attempts}x for ${slot.time} — blacklisting token: ${details.error}`);
+                  console.warn(`[Cron] getSlotDetails failed ${attempts}x for ${slot.time} — blacklisting: ${details.error}`);
                 } else {
                   console.warn(`[Cron] getSlotDetails failed for ${slot.time} (attempt ${attempts}/2, will retry): ${details.error}`);
                 }
-                continue;
+              } else if (!bookableWinner) {
+                bookableWinner = { slot, details };
               }
+            }
 
-              const booking = await bookReservation(authToken, details.bookToken, paymentMethodId);
-              if (booking.success) {
-                booked = true;
-                bookResult = { restaurant: restaurant.name, date, time: slot.time, reservationId: booking.reservationId };
-                const firstSeenNote = firstSeenSec !== elapsedSec ? ` (slot first seen T+${firstSeenSec}s)` : "";
-                console.log(`[Cron] BOOKED — ${restaurant.name} at ${slot.time} on ${date} | reservationId=${booking.reservationId ?? "n/a"} | T+${elapsedSec}s${firstSeenNote}`);
-                break;
-              } else {
-                if (booking.error?.includes("412") || booking.error?.includes("already booked") || booking.error?.includes("token expired")) failCount412++;
-                else if (booking.error?.includes("403") || booking.error?.includes("unavailable") || booking.error?.includes("membership")) failCount403++;
-                else failCountOther++;
-                console.warn(`[Cron] bookReservation failed for ${slot.time}: ${booking.error}`);
-                failedTokens.add(slot.configToken);
-              }
+            if (!bookableWinner) continue; // all slots failed details — try next loop
+
+            const { slot, details } = bookableWinner;
+            const firstSeenMs = slotFirstSeen.get(slot.configToken) ?? elapsedMs;
+            const firstSeenSec = Math.round(firstSeenMs / 1000);
+            console.log(`[Cron] Booking T+${elapsedSec}s (details raced in ${raceMs}ms, slot first seen T+${firstSeenSec}s): ${restaurant.name} ${slot.time} on ${date}`);
+
+            const booking = await bookReservation(authToken, details.bookToken, paymentMethodId);
+            if (booking.success) {
+              booked = true;
+              bookResult = { restaurant: restaurant.name, date, time: slot.time, reservationId: booking.reservationId };
+              const firstSeenNote = firstSeenSec !== elapsedSec ? ` (first seen T+${firstSeenSec}s)` : "";
+              console.log(`[Cron] BOOKED — ${restaurant.name} at ${slot.time} on ${date} | reservationId=${booking.reservationId ?? "n/a"} | T+${elapsedSec}s${firstSeenNote}`);
+            } else {
+              if (booking.error?.includes("412") || booking.error?.includes("already booked") || booking.error?.includes("token expired")) failCount412++;
+              else if (booking.error?.includes("403") || booking.error?.includes("unavailable") || booking.error?.includes("membership")) failCount403++;
+              else failCountOther++;
+              console.warn(`[Cron] bookReservation failed for ${slot.time}: ${booking.error}`);
+              failedTokens.add(slot.configToken);
             }
           } catch (err) {
             console.error(`[Cron] Error checking ${restaurant.name} on ${date}:`, err instanceof Error ? err.message : String(err));
