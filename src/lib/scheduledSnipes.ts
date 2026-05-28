@@ -153,3 +153,51 @@ export async function cleanupOldSnipes(): Promise<number> {
   if (removed > 0) await r.set(SNIPES_KEY, kept);
   return removed;
 }
+
+// ─── Notify Records ────────────────────────────────────────────────────────
+
+export interface NotifyRecord {
+  id: string;
+  restaurantId: string;
+  restaurantName: string;
+  venueId: number;
+  date: string;
+  partySize: number;
+  placedAt: string;
+  status: "placed" | "failed";
+  error?: string;
+}
+
+const NOTIFIES_KEY = "wolfepack:notifies";
+
+export async function listNotifyRecords(): Promise<NotifyRecord[]> {
+  const r = getRedis();
+  if (!r) return [];
+  const data = await r.get<NotifyRecord[]>(NOTIFIES_KEY);
+  return data ?? [];
+}
+
+export async function addNotifyRecords(records: NotifyRecord[]): Promise<void> {
+  const r = getRedis();
+  if (!r) throw new Error("Redis not configured");
+  const existing = await listNotifyRecords();
+  // Deduplicate: don't add same restaurant+date+partySize twice
+  const key = (rec: NotifyRecord) => `${rec.restaurantId}:${rec.date}:${rec.partySize}`;
+  const existingKeys = new Set(existing.map(key));
+  const newOnes = records.filter(rec => !existingKeys.has(key(rec)));
+  if (newOnes.length === 0) return;
+  await r.set(NOTIFIES_KEY, [...existing, ...newOnes]);
+}
+
+export async function removeNotifyRecord(id: string): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  const records = await listNotifyRecords();
+  await r.set(NOTIFIES_KEY, records.filter((rec) => rec.id !== id));
+}
+
+export async function clearNotifyRecords(): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  await r.set(NOTIFIES_KEY, []);
+}

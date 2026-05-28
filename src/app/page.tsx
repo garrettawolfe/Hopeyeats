@@ -20,7 +20,7 @@ import SettingsDrawer, {
 } from "@/components/SettingsDrawer";
 import RestaurantMonitorCard from "@/components/RestaurantMonitorCard";
 import LoginPage from "@/components/LoginPage";
-import SnipePanel from "@/components/SnipePanel";
+import AppNav from "@/components/AppNav";
 import DebugPanel from "@/components/DebugPanel";
 import { ToastProvider, useToast } from "@/components/Toast";
 import type { LogEntry, LogLevel } from "@/lib/logger";
@@ -122,7 +122,6 @@ function HomeInner() {
   const [lastPollTime, setLastPollTime] = useState<string | null>(null);
   const [, setTick] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const monitorPausedRef = useRef(false);
   const [scanProgress, setScanProgress] = useState<{ restaurant: string; index: number; total: number } | null>(null);
   const [activityFeed, setActivityFeed] = useState<ActivityItem[]>([]);
   const [autoBookIds, setAutoBookIds] = useState<Set<string>>(new Set());
@@ -134,14 +133,6 @@ function HomeInner() {
   const [mealFilter, setMealFilter] = useState<"all" | "dinner" | "bar" | "brunch">("all");
   const [activePartySize, setActivePartySize] = useState<2 | 4>(4);
   const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
-  const [appMode, setAppMode] = useState<"monitor" | "snipe">("monitor");
-  // Keep ref in sync so poll() can check without re-mounting the effect
-  useEffect(() => {
-    monitorPausedRef.current = appMode === "snipe";
-    if (appMode === "snipe") addLog("debug", "poll", "Monitor paused — snipe mode active");
-    else addLog("debug", "poll", "Monitor resumed — back to availability mode");
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appMode]);
   const [debugLog, setDebugLog] = useState<LogEntry[]>([]);
   const [showDebugLog, setShowDebugLog] = useState(false);
   const [consecutiveFails, setConsecutiveFails] = useState(0);
@@ -171,6 +162,10 @@ function HomeInner() {
 
   // --- Initialize profiles on mount ---
   useEffect(() => {
+    // Restore loggedInUser from sessionStorage on mount
+    const storedUser = sessionStorage.getItem("wolfepack:user");
+    if (storedUser) setLoggedInUser(storedUser);
+
     let profs = getProfiles();
     let active = getActiveProfile();
 
@@ -294,10 +289,8 @@ function HomeInner() {
       // Baseline: check everyone
       tier2 = allMonitor;
     } else {
-      // Rotate through monitor-only restaurants in groups of 5
-      // 10 was triggering WAF — 5 restaurants × ~2.6 dates ≈ 13 API calls,
-      // well under Resy's per-IP threshold (~50/5min)
-      const GROUP_SIZE = 5;
+      // Rotate through monitor-only restaurants in groups of ~10
+      const GROUP_SIZE = 10;
       const numGroups = Math.ceil(allMonitor.length / GROUP_SIZE);
       const groupIdx = cycle % Math.max(numGroups, 1);
       tier2 = allMonitor.slice(groupIdx * GROUP_SIZE, (groupIdx + 1) * GROUP_SIZE);
@@ -534,9 +527,7 @@ function HomeInner() {
         console.log(`[WolfePack] Backing off: ${Math.round(interval / 1000)}s (${fails} consecutive failures)`);
       }
       intervalRef.current = setTimeout(() => {
-        if (!monitorPausedRef.current) {
-          poll();
-        }
+        poll();
         scheduleNext();
       }, interval);
     };
@@ -766,6 +757,7 @@ function HomeInner() {
     return (
       <LoginPage
         onLogin={(username) => {
+          sessionStorage.setItem("wolfepack:user", username);
           setLoggedInUser(username);
           const existing = getProfiles();
           if (!existing.includes(username)) {
@@ -840,7 +832,7 @@ function HomeInner() {
               </button>
 
               <button
-                onClick={() => setLoggedInUser(null)}
+                onClick={() => { sessionStorage.removeItem("wolfepack:user"); setLoggedInUser(null); }}
                 className="text-xs text-stone-500 hover:text-stone-300 transition-colors"
                 title="Logout"
               >
@@ -851,6 +843,8 @@ function HomeInner() {
             </div>
           </div>
         </div>
+
+        <AppNav />
 
         {/* Progress bar + activity feed */}
         {isPolling && (
@@ -1003,53 +997,8 @@ function HomeInner() {
           </div>
         )}
 
-        {/* Mode Toggle: Monitor vs Snipe */}
-        <div className="flex gap-1 mb-4">
-          {([["monitor", "Availability Monitor"], ["snipe", "Snipe Mode"]] as const).map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setAppMode(key)}
-              className={`px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
-                appMode === key
-                  ? key === "snipe" ? "bg-red-600 text-white" : "bg-charcoal text-white"
-                  : "bg-white border border-stone-200 text-stone-500 hover:bg-stone-50"
-              }`}
-            >
-              {key === "snipe" && "⚡ "}{label}
-            </button>
-          ))}
-        </div>
-
-        {/* Snipe Panel (Mode 1) */}
-        {appMode === "snipe" && (
-          <div className="mb-6">
-            <SnipePanel
-              restaurants={resyRestaurants}
-              isAuthenticated={resyAuth?.authenticated ?? false}
-              authToken={resyAuth?.authToken}
-              partySize={settings.partySize ?? 4}
-              dayTimeWindows={mealFilter === "brunch" ? DEFAULT_BRUNCH_TIME_WINDOWS : settings.dayTimeWindows}
-              preferredDays={mealFilter === "brunch" ? ["saturday", "sunday"] : settings.preferredDays}
-              onLog={(level, msg, data) => addLog(level, "snipe", msg, data)}
-              onBooked={(event) => {
-                addToast(`Sniped! ${event.restaurant} at ${event.time} on ${event.date}`, "success", 10000);
-                setBookingLog((prev) => [{
-                  id: `snipe-${Date.now()}`,
-                  restaurantName: String(event.restaurant),
-                  date: String(event.date),
-                  time: String(event.time),
-                  partySize: settings.partySize ?? 4,
-                  status: "success" as const,
-                  timestamp: new Date().toISOString(),
-                }, ...prev].slice(0, 50));
-              }}
-            />
-          </div>
-        )}
-
-        {appMode === "monitor" && (<>
         {/* City Tabs */}
-        <div className="flex gap-1 mb-3">
+        <div className="flex flex-wrap gap-1 mb-3">
           {([["all", "All Cities"], ["nyc", "NYC"], ["miami", "Miami"], ["hamptons", "Hamptons"]] as const).map(([key, label]) => (
             <button
               key={key}
@@ -1179,7 +1128,6 @@ function HomeInner() {
             Rate limited — backing off {Math.round((latestResult.rateLimitStats.backoffRemaining ?? 0) / 1000)}s
           </div>
         )}
-        </>)}
 
         <footer className="mt-12 pt-6 border-t border-stone-200 text-center text-[10px] sm:text-xs text-stone-400 pb-4">
           <p>WolfePack Eats · Monitoring {resyRestaurants.length} restaurants on Resy</p>

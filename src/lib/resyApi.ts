@@ -115,6 +115,7 @@ function randomUserAgent(): string {
 // Subsequent requests MUST include these cookies or get blocked with 500.
 
 const cookieJar: Map<string, string> = new Map();
+
 // Expiry time (ms since epoch) per cookie name; undefined = session cookie
 const cookieExpiry: Map<string, number> = new Map();
 
@@ -174,27 +175,6 @@ export function getCookieHeader(): string | null {
   return Array.from(cookieJar.entries())
     .map(([name, value]) => `${name}=${value}`)
     .join("; ");
-}
-
-/** Export the current cookie jar as a plain object (for Redis persistence). */
-export function exportCookies(): Record<string, string> {
-  return Object.fromEntries(cookieJar.entries());
-}
-
-/**
- * Import cookies from the pre-warm Redis cache and mark them as trusted.
- * Calling this before warmUpImperva() prevents the warmup from discarding them.
- */
-export function importCookiesFromPrewarm(cookies: Record<string, string>): void {
-  cookieJar.clear();
-  for (const [name, value] of Object.entries(cookies)) {
-    cookieJar.set(name, value);
-  }
-  // Tell warmUpImperva() these cookies are known-good — skip re-warming
-  lastPollHadSuccess = true;
-  lastWarmUpAt = Date.now();
-  const names = Object.keys(cookies).join(", ");
-  console.log(`[Resy] Loaded ${Object.keys(cookies).length} cookies from pre-warm cache: [${names}]`);
 }
 
 // ─── Proxy Support ──────────────────────────────────────────────────────────
@@ -449,6 +429,27 @@ export async function warmUpImperva(): Promise<void> {
   }
 }
 
+/** Export the current cookie jar as a plain object (for Redis persistence). */
+export function exportCookies(): Record<string, string> {
+  return Object.fromEntries(cookieJar.entries());
+}
+
+/**
+ * Import cookies from the pre-warm Redis cache and mark them as trusted.
+ * Calling this before warmUpImperva() prevents the warmup from discarding them.
+ */
+export function importCookiesFromPrewarm(cookies: Record<string, string>): void {
+  cookieJar.clear();
+  for (const [name, value] of Object.entries(cookies)) {
+    cookieJar.set(name, value);
+  }
+  // Tell warmUpImperva() these cookies are known-good — skip re-warming
+  lastPollHadSuccess = true;
+  lastWarmUpAt = Date.now();
+  const names = Object.keys(cookies).join(", ");
+  console.log(`[Resy] Loaded ${Object.keys(cookies).length} cookies from pre-warm cache: [${names}]`);
+}
+
 // ─── Core Types ──────────────────────────────────────────────────────────────
 
 export interface ResySlot {
@@ -654,15 +655,6 @@ export async function findAvailability(
   const slotCount = data.results?.venues?.[0]?.slots?.length ?? 0;
   if (slotCount > 0 && rateLimitState.pollRequestCount <= 5) {
     console.log(`[Resy] Found ${slotCount} slots venue=${venueId} date=${date}`);
-    // Log raw structure of first slot once per session to capture unknown fields
-    // (helps identify Crown/access-restricted slots we're not parsing yet)
-    if (rateLimitState.pollRequestCount === 1) {
-      const rawSlot = (data as unknown as { results: { venues: { slots: unknown[] }[] } })
-        .results?.venues?.[0]?.slots?.[0];
-      if (rawSlot) {
-        console.log(`[Resy] Raw slot[0] venue=${venueId}: ${JSON.stringify(rawSlot)}`);
-      }
-    }
   }
   return data;
 }
@@ -722,23 +714,20 @@ export function parseSlots(
   if (venues.length === 0) return [];
 
   const venue = venues[0];
-  const slots = venue.slots ?? [];
+  const rawSlots = venue.slots ?? [];
 
-  // Filter out Crown/exclusive-gated slots before attempting /3/details calls.
-  // Two complementary signals (either is sufficient to skip):
-  //   - exclusive.id != 0  → slot requires Crown/GDA/invite-only membership
-  //   - config.is_visible === false → server marks slot as non-public in the UI
-  const visibleSlots = slots.filter((slot) => {
+  // Filter out Crown/exclusive slots that normal users can't book
+  const slots = rawSlots.filter((slot) => {
     const isExclusive = (slot.exclusive?.id ?? 0) !== 0;
     const isHidden = slot.config?.is_visible === false;
     return !isExclusive && !isHidden;
   });
-  const hiddenCount = slots.length - visibleSlots.length;
+  const hiddenCount = rawSlots.length - slots.length;
   if (hiddenCount > 0) {
-    console.log(`[Resy] ${venueName}: skipping ${hiddenCount} Crown/exclusive slot(s) (exclusive.id≠0 or is_visible=false), ${visibleSlots.length} public slot(s) remain`);
+    console.log(`[Resy] ${venueName}: skipping ${hiddenCount} Crown/exclusive slot(s), ${slots.length} public slot(s) remain`);
   }
 
-  return visibleSlots.map((slot) => {
+  return slots.map((slot) => {
     const dateTime = slot.date?.start ?? "";
     const [datePart, timePart] = dateTime.split(" ");
     const time = timePart ? timePart.substring(0, 5) : "";

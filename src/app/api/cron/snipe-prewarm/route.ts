@@ -51,7 +51,6 @@ export async function POST(request: Request) {
 
     if (valid) {
       const cookies = exportCookies();
-      // Save to global pool (shared by all concurrent snipes on same instance)
       await saveGlobalCookies(cookies).catch(() => {});
       if (snipeId !== "unknown") {
         await savePrewarmCookies(snipeId, cookies);

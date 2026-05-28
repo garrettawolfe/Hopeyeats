@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server";
 import { Receiver } from "@upstash/qstash";
-import { findAvailability, parseSlots, resetConsecutiveErrors, warmUpImperva, importCookiesFromPrewarm, hasValidCookies, exportCookies, pruneExpiredCookies, cookiesExpiringSoon } from "@/lib/resyApi";
+import {
+  findAvailability,
+  parseSlots,
+  resetConsecutiveErrors,
+  warmUpImperva,
+  hasValidCookies,
+  exportCookies,
+  importCookiesFromPrewarm,
+  pruneExpiredCookies,
+  cookiesExpiringSoon,
+} from "@/lib/resyApi";
 import {
   getSlotDetails,
   bookReservation,
@@ -8,7 +18,12 @@ import {
   type SlotDetails,
 } from "@/lib/resyBooking";
 import { restaurants } from "@/data/restaurants";
-import { updateScheduledSnipe, loadPrewarmCookies, loadGlobalCookies, saveGlobalCookies } from "@/lib/scheduledSnipes";
+import {
+  updateScheduledSnipe,
+  loadPrewarmCookies,
+  loadGlobalCookies,
+  saveGlobalCookies,
+} from "@/lib/scheduledSnipes";
 
 export const maxDuration = 120;
 
@@ -17,36 +32,41 @@ async function verifyQStash(request: Request, body: string): Promise<boolean> {
   const nextSigningKey = process.env.QSTASH_NEXT_SIGNING_KEY;
 
   if (!signingKey || !nextSigningKey) {
+    // If signing keys not set, allow in development
     if (process.env.NODE_ENV === "development") return true;
-    console.warn("[Cron] QStash signing keys not configured — rejecting request");
+    console.warn("[Cron] QStash signing keys not configured");
     return false;
   }
 
-  const receiver = new Receiver({ currentSigningKey: signingKey, nextSigningKey: nextSigningKey });
+  const receiver = new Receiver({
+    currentSigningKey: signingKey,
+    nextSigningKey: nextSigningKey,
+  });
 
   try {
     const signature = request.headers.get("upstash-signature") ?? "";
-    if (!signature) {
-      console.warn("[Cron] No upstash-signature header present");
-      return false;
-    }
     const isValid = await receiver.verify({ signature, body });
-    if (!isValid) console.warn("[Cron] QStash signature verification failed");
     return isValid;
-  } catch (err) {
-    console.warn("[Cron] QStash signature error:", err instanceof Error ? err.message : String(err));
+  } catch {
     return false;
   }
 }
 
 /**
  * POST /api/cron/snipe-scheduler
- * Called by QStash at the scheduled drop time. Runs the snipe synchronously.
+ *
+ * Called by QStash at the scheduled drop time.
+ * Runs the snipe synchronously (no streaming — this is server-side).
+ *
+ * Body: {
+ *   snipeId, restaurantIds, dates, preferredTimes,
+ *   timeRadius, snipeWindowSeconds, partySize, authToken
+ * }
  */
 export async function POST(request: Request) {
-  const cronStart = Date.now();
   const bodyText = await request.text();
 
+  // Verify QStash signature
   const isVerified = await verifyQStash(request, bodyText);
   if (!isVerified) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -65,360 +85,209 @@ export async function POST(request: Request) {
     dates = [],
     preferredTimes = [],
     timeRadius = 30,
-    snipeWindowSeconds = 90,
+    snipeWindowSeconds = 60,
     partySize = 2,
     authToken,
   } = body;
 
-  // ── Validate inputs ───────────────────────────────────────────────────────
-
   if (!authToken) {
-    console.error("[Cron] ABORT — no auth token in payload");
-    if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: "No auth token in payload" });
+    if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: "No auth token" });
     return NextResponse.json({ error: "No auth token" }, { status: 401 });
   }
 
-  const targets = restaurants.filter((r) => restaurantIds.includes(r.id) && r.resyVenueId);
+  console.log(`[Cron] START snipe=${snipeId} restaurants=${restaurantIds.length} dates=${dates.length} window=${snipeWindowSeconds}s`);
 
-  if (targets.length === 0 || dates.length === 0) {
-    const reason = targets.length === 0
-      ? `No matching restaurants for IDs: [${restaurantIds.join(", ")}]`
-      : `No dates provided`;
-    console.error(`[Cron] ABORT — ${reason}`);
-    if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: reason });
-    return NextResponse.json({ error: reason }, { status: 400 });
+  if (snipeId) {
+    await updateScheduledSnipe(snipeId, { status: "running" });
   }
-
-  if (snipeWindowSeconds > 100) {
-    console.warn(`[Cron] snipeWindowSeconds=${snipeWindowSeconds} is close to Vercel's 120s limit — may timeout`);
-  }
-
-  // ── Log full config at start (critical for post-mortem) ───────────────────
-
-  console.log(`[Cron] START snipe=${snipeId} window=${snipeWindowSeconds}s party=${partySize} token=...${authToken.slice(-6)}`);
-  console.log(`[Cron] Targets: ${targets.map((r) => r.name).join(", ")}`);
-  console.log(`[Cron] Dates: ${dates.join(", ")}`);
-  console.log(`[Cron] PreferredTimes: ${preferredTimes.join(", ")} ±${timeRadius}min`);
-
-  if (snipeId) await updateScheduledSnipe(snipeId, { status: "running" });
-
-  // ── Load pre-warm cookies from Redis, then warmup ────────────────────────
-  // Pre-warm fires 90s before this and saves its Imperva cookies to Redis.
-  // If the same Vercel region handles both requests, loading them here means
-  // we skip a redundant warmup and start with fresh WAF cookies immediately.
 
   try {
-    // 1. Try global cookie pool first (shared by all concurrent snipes on same instance)
+    // Load pre-warmed cookies from Redis (global pool first, then per-snipe override)
     const globalCookies = await loadGlobalCookies();
     if (globalCookies && Object.keys(globalCookies).length > 0) {
       importCookiesFromPrewarm(globalCookies);
-      console.log(`[Cron] Loaded ${Object.keys(globalCookies).length} cookies from global pool`);
+      console.log(`[Cron] Loaded ${Object.keys(globalCookies).length} global WAF cookies from Redis`);
     }
-
-    // 2. Per-snipe pre-warm cookies override global (they're more specific / equally fresh)
     if (snipeId) {
-      const cached = await loadPrewarmCookies(snipeId);
-      if (cached && Object.keys(cached).length > 0) {
-        importCookiesFromPrewarm(cached);
-        console.log(`[Cron] Pre-warm cookies loaded from Redis (${Object.keys(cached).length}) — overriding global`);
+      const snipeCookies = await loadPrewarmCookies(snipeId);
+      if (snipeCookies && Object.keys(snipeCookies).length > 0) {
+        importCookiesFromPrewarm(snipeCookies);
+        console.log(`[Cron] Loaded ${Object.keys(snipeCookies).length} per-snipe WAF cookies from Redis`);
       }
     }
 
-    if (!hasValidCookies()) {
-      console.log(`[Cron] No valid cookies in Redis — will warm up fresh`);
-    }
-  } catch (err) {
-    console.warn("[Cron] Could not load cookies from Redis (non-fatal):", err instanceof Error ? err.message : String(err));
-  }
-
-  try {
+    // Warm up WAF cookies and prefetch payment
     await warmUpImperva();
     if (hasValidCookies()) saveGlobalCookies(exportCookies()).catch(() => {});
-  } catch (err) {
-    console.warn("[Cron] Warmup failed (continuing without cookies):", err instanceof Error ? err.message : String(err));
-  }
 
-  const paymentMethodId = await prefetchPaymentMethod(authToken);
-  if (!paymentMethodId) {
-    console.error("[Cron] ABORT — no payment method on Resy account (token may be expired)");
-    if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: "No payment method — auth token may be expired" });
-    return NextResponse.json({ error: "No payment method" }, { status: 400 });
-  }
+    const paymentMethodId = await prefetchPaymentMethod(authToken);
+    if (!paymentMethodId) {
+      if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: "No payment method" });
+      return NextResponse.json({ error: "No payment method" }, { status: 400 });
+    }
 
-  console.log(`[Cron] Payment method confirmed: ${paymentMethodId}`);
+    const targets = restaurants.filter(
+      (r) => restaurantIds.includes(r.id) && r.resyVenueId,
+    );
 
-  // ── Snipe loop ────────────────────────────────────────────────────────────
+    if (targets.length === 0 || dates.length === 0) {
+      if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: "No valid targets or dates" });
+      return NextResponse.json({ error: "No valid targets or dates" }, { status: 400 });
+    }
 
-  resetConsecutiveErrors();
+    resetConsecutiveErrors();
 
-  const setupElapsed = Math.round((Date.now() - cronStart) / 1000);
-  console.log(`[Cron] Setup complete in ${setupElapsed}s — starting poll loop (effective window: ${snipeWindowSeconds - setupElapsed}s remaining)`);
+    const startTime = Date.now();
+    const deadline = startTime + snipeWindowSeconds * 1000;
+    let attempt = 0;
+    let booked = false;
+    let bookResult: { restaurant: string; date: string; time: string; reservationId?: string } | null = null;
+    const failedTokens = new Set<string>();
+    const slotFirstSeen = new Map<string, number>(); // configToken → ms since startTime
+    let failCount403 = 0;
+    let failCount412 = 0;
+    let failCountOther = 0;
 
-  // 1200ms between loops stays under Resy's WAF threshold (~27 clean calls per ~35s window).
-  // findAvailability adds its own 150–800ms gaussian jitter on top of this.
-  const POLL_INTERVAL_MS = 1200;
+    // All restaurant×date pairs for parallel polling
+    const pairs = targets.flatMap((restaurant) =>
+      dates.map((date: string) => ({ restaurant, date }))
+    );
 
-  const startTime = Date.now();
-  const deadline = startTime + snipeWindowSeconds * 1000;
-  let loopCount = 0;
-  let apiCallCount = 0;
-  let totalSlotsFound = 0;
-  let totalSlotsMatched = 0;
-  let booked = false;
-  let bookResult: { restaurant: string; date: string; time: string; reservationId?: string } | null = null;
-  const failedTokens = new Set<string>();
-  const tokenAttempts = new Map<string, number>(); // track getSlotDetails failures before blacklisting
-  const lastAvailableTimes = new Map<string, string>(); // deduplicate "no match" log lines
-  const slotFirstSeen = new Map<string, number>(); // configToken → ms since startTime when first seen
-  let lastProgressLog = startTime;
-  let wafEpisodes = 0; // how many times we've backed off due to WAF
-  // Failure type counters for final summary diagnosis
-  let failCount403 = 0;
-  let failCount412 = 0;
-  let failCountOther = 0;
+    const PARALLEL_STAGGER_MS = 200;
 
-  // Stagger between parallel findAvailability calls — prevents burst pattern that
-  // Imperva's behavioral ML flags. findAvailability's internal 150–800ms jitter only
-  // applies relative to the shared lastRequestAt, which all concurrent calls read
-  // simultaneously, so without this stagger they all fire nearly at once.
-  const PARALLEL_STAGGER_MS = 200;
-
-  try {
     while (Date.now() < deadline && !booked) {
-      loopCount++;
-      const callsThisLoop = targets.length * dates.length;
+      attempt++;
 
-      // Prune expired Imperva cookies before each loop to avoid sending dead sessions.
+      // Proactive cookie maintenance
       const pruned = pruneExpiredCookies();
-      if (pruned > 0) {
-        console.warn(`[Cron] Pruned ${pruned} expired cookie(s) — may need re-warm`);
+      if (pruned > 0) console.log(`[Cron] Pruned ${pruned} expired cookies`);
+      if (cookiesExpiringSoon(30_000) || !hasValidCookies()) {
+        console.log(`[Cron] Re-warming WAF cookies (expiring soon or missing)`);
+        await warmUpImperva();
+        if (hasValidCookies()) saveGlobalCookies(exportCookies()).catch(() => {});
       }
 
-      // Proactively re-warm if cookies are about to expire in the next 30s
-      if (cookiesExpiringSoon(30_000) && hasValidCookies()) {
-        console.log(`[Cron] Cookies expiring soon — proactive re-warm`);
-        try {
-          await warmUpImperva();
-          if (hasValidCookies()) saveGlobalCookies(exportCookies()).catch(() => {});
-        } catch { /* non-fatal */ }
-      }
-
-      // Fire all restaurant×date availability checks in parallel with a stagger.
-      // 200ms between each pair spreads 6 requests over ~1s, preventing the burst
-      // pattern that Imperva's behavioral ML uses to distinguish bots from browsers.
-      // allSettled preserves input order so we process targets in priority sequence.
-      const pairs = targets.flatMap((r) => dates.map((d: string) => ({ restaurant: r, date: d })));
-      apiCallCount += pairs.length;
-
+      // Parallel availability checks with stagger to avoid burst WAF triggering
       const availResults = await Promise.allSettled(
         pairs.map(({ restaurant, date }, idx) =>
-          new Promise<{ restaurant: typeof targets[0]; date: string; result: Awaited<ReturnType<typeof findAvailability>> }>(
-            (resolve, reject) => setTimeout(
-              () => findAvailability(restaurant.resyVenueId!, date, partySize, authToken)
-                .then((result) => resolve({ restaurant, date, result }))
-                .catch(reject),
-              idx * PARALLEL_STAGGER_MS
-            )
+          new Promise<{ restaurant: typeof targets[0]; date: string; slots: ReturnType<typeof parseSlots> }>(
+            (resolve, reject) =>
+              setTimeout(() => {
+                findAvailability(restaurant.resyVenueId!, date, partySize, authToken)
+                  .then((result) => {
+                    if (!result) return resolve({ restaurant, date, slots: [] });
+                    resolve({
+                      restaurant,
+                      date,
+                      slots: parseSlots(result, restaurant.resyVenueId!, restaurant.name, restaurant.resyUrl!, partySize),
+                    });
+                  })
+                  .catch(reject);
+              }, idx * PARALLEL_STAGGER_MS)
           )
         )
       );
 
-      let nullsThisLoop = 0;
-
-      for (const ar of availResults) {
-        if (booked) break;
-
-        if (ar.status === "rejected") {
-          nullsThisLoop++;
-          continue;
-        }
-
-        const { restaurant, date, result } = ar.value;
-
-        if (!result) {
-          nullsThisLoop++;
-          continue;
-        }
-
-        const slots = parseSlots(
-          result,
-          restaurant.resyVenueId!,
-          restaurant.name,
-          restaurant.resyUrl!,
-          partySize,
-        );
-
-        totalSlotsFound += slots.length;
-        if (slots.length === 0) continue;
-
-        // Track first time we see each slot token (for post-mortem timing)
-        const elapsedMs = Date.now() - startTime;
-        for (const s of slots) {
-          if (!slotFirstSeen.has(s.configToken)) slotFirstSeen.set(s.configToken, elapsedMs);
-        }
-
-        // Score slots against preferred times
-        const blacklistedInWindow = slots.filter((s) => failedTokens.has(s.configToken));
-        const scored = slots
-          .filter((s) => !failedTokens.has(s.configToken))
-          .map((s) => {
-            const slotMin = parseInt(s.time.split(":")[0]) * 60 + parseInt(s.time.split(":")[1]);
-            let score = 1000;
-            if (preferredTimes.length > 0) {
-              for (let i = 0; i < preferredTimes.length; i++) {
-                const [ph, pm] = preferredTimes[i].split(":").map(Number);
-                const diff = Math.abs(slotMin - (ph * 60 + pm));
-                if (diff <= timeRadius) { score = i * 100 + diff; break; }
+      // Collect and score all matching slots across all pairs
+      type ScoredSlot = { slot: ReturnType<typeof parseSlots>[0]; restaurant: typeof targets[0]; date: string; score: number };
+      const allScored: ScoredSlot[] = [];
+      for (const res of availResults) {
+        if (res.status === "rejected") continue;
+        const { restaurant, date, slots } = res.value;
+        for (const slot of slots) {
+          if (failedTokens.has(slot.configToken)) continue;
+          let score = 1000;
+          if (preferredTimes.length > 0) {
+            const slotMin = parseInt(slot.time.split(":")[0]) * 60 + parseInt(slot.time.split(":")[1]);
+            for (let i = 0; i < preferredTimes.length; i++) {
+              const [ph, pm] = preferredTimes[i].split(":").map(Number);
+              const prefMin = ph * 60 + pm;
+              if (Math.abs(slotMin - prefMin) <= timeRadius) {
+                score = i * 100 + Math.abs(slotMin - prefMin);
+                break;
               }
-            } else {
-              score = 0;
             }
-            return { slot: s, score };
-          })
-          .filter((s) => s.score < 1000)
-          .sort((a, b) => a.score - b.score);
-
-        if (blacklistedInWindow.length > 0 && scored.length === 0) {
-          const blacklistedTimes = blacklistedInWindow.map((s) => s.time).join(", ");
-          console.warn(`[Cron] loop=${loopCount} ${restaurant.name} ${date} — ${blacklistedInWindow.length} slot(s) SKIPPED (previously failed tokens): ${blacklistedTimes}`);
-        }
-
-        totalSlotsMatched += scored.length;
-
-        if (scored.length === 0) {
-          const availTimes = slots.map((s) => s.time).join(", ");
-          const logKey = `${restaurant.id}:${date}`;
-          if (lastAvailableTimes.get(logKey) !== availTimes) {
-            const prev = lastAvailableTimes.get(logKey);
-            const changeNote = prev ? ` (was: ${prev})` : "";
-            console.log(`[Cron] loop=${loopCount} ${restaurant.name} ${date} — ${slots.length} slots but none in window [${preferredTimes.join(",")} ±${timeRadius}m] — available: ${availTimes}${changeNote}`);
-            lastAvailableTimes.set(logKey, availTimes);
+          } else {
+            score = 0;
           }
-          continue;
+          if (score < 1000) {
+            if (!slotFirstSeen.has(slot.configToken)) {
+              slotFirstSeen.set(slot.configToken, Date.now() - startTime);
+            }
+            allScored.push({ slot, restaurant, date, score });
+          }
         }
+      }
 
-        const elapsedSec = Math.round(elapsedMs / 1000);
-        console.log(`[Cron] loop=${loopCount} T+${elapsedSec}s ${restaurant.name} ${date} — ${scored.length} matching slot(s), racing details in parallel (best: ${scored[0].slot.time} score=${scored[0].score})`);
+      if (allScored.length > 0) {
+        allScored.sort((a, b) => a.score - b.score);
+        const elapsed = Date.now() - startTime;
+        console.log(`[Cron] attempt=${attempt} T+${elapsed}ms: ${allScored.length} slots, best=${allScored[0].restaurant.name} ${allScored[0].slot.time} (score=${allScored[0].score})`);
 
-        // Pre-flight warmup once so parallel getSlotDetails calls don't each re-warm concurrently.
-        try { await warmUpImperva(); } catch { /* non-fatal */ }
-
-        // Race all matched slots' /3/details calls simultaneously.
-        const raceStart = Date.now();
-        const raceResults = await Promise.allSettled(
-          scored.map(async ({ slot }) => {
-            const details = await getSlotDetails(authToken, slot.configToken, date, partySize);
-            return { slot, details };
-          })
+        // Parallel /3/details race across all matching slots
+        const detailsResults = await Promise.allSettled(
+          allScored.map(({ slot, date }) => getSlotDetails(authToken, slot.configToken, date, partySize))
         );
-        const raceMs = Date.now() - raceStart;
 
-        // Process in score order; track failures, book first success.
-        let bookableWinner: { slot: typeof scored[0]["slot"]; details: SlotDetails } | null = null;
-
-        for (const result of raceResults) {
-          if (result.status === "rejected") {
-            failCountOther++;
-            console.warn(`[Cron] getSlotDetails threw unexpectedly: ${result.reason}`);
+        let bookableWinner: { slot: ReturnType<typeof parseSlots>[0]; details: SlotDetails; restaurant: typeof targets[0] } | null = null;
+        for (let i = 0; i < detailsResults.length; i++) {
+          const dr = detailsResults[i];
+          if (dr.status === "rejected" || "error" in dr.value) {
+            const errMsg = dr.status === "rejected" ? String(dr.reason) : (dr.value as { error: string }).error;
+            if (errMsg.includes("403")) failCount403++;
+            else if (errMsg.includes("412")) failCount412++;
+            else failCountOther++;
+            failedTokens.add(allScored[i].slot.configToken);
             continue;
           }
-          const { slot, details } = result.value;
-          if ("error" in details) {
-            const attempts = (tokenAttempts.get(slot.configToken) ?? 0) + 1;
-            tokenAttempts.set(slot.configToken, attempts);
-            if (details.error.includes("locked") || details.error.includes("exclusive") || details.error.includes("403")) failCount403++;
-            else if (details.error.includes("412") || details.error.includes("already booked")) failCount412++;
-            else failCountOther++;
-            if (attempts >= 2) {
-              failedTokens.add(slot.configToken);
-              console.warn(`[Cron] getSlotDetails failed ${attempts}x for ${slot.time} — blacklisting: ${details.error}`);
-            } else {
-              console.warn(`[Cron] getSlotDetails failed for ${slot.time} (attempt ${attempts}/2, will retry): ${details.error}`);
-            }
-          } else if (!bookableWinner) {
-            bookableWinner = { slot, details };
+          if (!bookableWinner) {
+            bookableWinner = { slot: allScored[i].slot, details: dr.value as SlotDetails, restaurant: allScored[i].restaurant };
           }
         }
 
-        if (!bookableWinner) continue;
-
-        const { slot, details } = bookableWinner;
-        const firstSeenMs = slotFirstSeen.get(slot.configToken) ?? elapsedMs;
-        const firstSeenSec = Math.round(firstSeenMs / 1000);
-        console.log(`[Cron] Booking T+${elapsedSec}s (details raced in ${raceMs}ms, slot first seen T+${firstSeenSec}s): ${restaurant.name} ${slot.time} on ${date}`);
-
-        const booking = await bookReservation(authToken, details.bookToken, paymentMethodId);
-        if (booking.success) {
-          booked = true;
-          bookResult = { restaurant: restaurant.name, date, time: slot.time, reservationId: booking.reservationId };
-          const firstSeenNote = firstSeenSec !== elapsedSec ? ` (first seen T+${firstSeenSec}s)` : "";
-          console.log(`[Cron] BOOKED — ${restaurant.name} at ${slot.time} on ${date} | reservationId=${booking.reservationId ?? "n/a"} | T+${elapsedSec}s${firstSeenNote}`);
-        } else {
-          if (booking.error?.includes("412") || booking.error?.includes("already booked") || booking.error?.includes("token expired")) failCount412++;
-          else if (booking.error?.includes("403") || booking.error?.includes("unavailable") || booking.error?.includes("membership")) failCount403++;
-          else failCountOther++;
-          console.warn(`[Cron] bookReservation failed for ${slot.time}: ${booking.error}`);
-          failedTokens.add(slot.configToken);
+        if (bookableWinner) {
+          const { slot, details, restaurant } = bookableWinner;
+          const firstSeenMs = slotFirstSeen.get(slot.configToken) ?? 0;
+          const booking = await bookReservation(authToken, details.bookToken, paymentMethodId);
+          const totalElapsed = Date.now() - startTime;
+          if (booking.success) {
+            booked = true;
+            bookResult = { restaurant: restaurant.name, date: slot.date, time: slot.time, reservationId: booking.reservationId };
+            console.log(`[Cron] BOOKED! ${restaurant.name} at ${slot.time} on ${slot.date} — T+${totalElapsed}ms (first seen T+${firstSeenMs}ms)`);
+          } else {
+            failedTokens.add(slot.configToken);
+            failCountOther++;
+          }
         }
-      }
-
-      // WAF backoff: if every call in this loop returned null, the IP is blocked.
-      // Exponential backoff (3s → 4.5s → 6.75s → capped at 8s) — much shorter than
-      // the previous flat 12s. 5 episodes now cost ~30s instead of 60s.
-      if (!booked && nullsThisLoop === callsThisLoop && callsThisLoop > 0) {
-        wafEpisodes++;
-        const backoffMs = Math.min(3_000 * Math.pow(1.5, wafEpisodes - 1), 8_000);
-        const remaining = Math.round((deadline - Date.now()) / 1000);
-        console.warn(`[Cron] WAF episode #${wafEpisodes} — all ${nullsThisLoop} calls blocked (loop=${loopCount}, ${remaining}s left). Backing off ${(backoffMs / 1000).toFixed(1)}s then re-warming.`);
-        await new Promise((r) => setTimeout(r, backoffMs));
-        try {
-          await warmUpImperva();
-          if (hasValidCookies()) saveGlobalCookies(exportCookies()).catch(() => {});
-        } catch { /* non-fatal */ }
-      }
-
-      // Periodic progress log every 10s so Vercel shows activity
-      const now = Date.now();
-      if (!booked && now - lastProgressLog >= 10_000) {
-        const elapsed = Math.round((now - startTime) / 1000);
-        console.log(`[Cron] Progress: ${elapsed}s elapsed, loop=${loopCount}, apiCalls=${apiCallCount}, slotsFound=${totalSlotsFound}, matched=${totalSlotsMatched}, wafEpisodes=${wafEpisodes}`);
-        lastProgressLog = now;
       }
 
       if (!booked) {
-        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      if (attempt % 10 === 0) {
+        const elapsed = Date.now() - startTime;
+        console.log(`[Cron] attempt=${attempt} T+${elapsed}ms fails=403:${failCount403}/412:${failCount412}/other:${failCountOther}`);
       }
     }
 
-    // ── Final summary ─────────────────────────────────────────────────────
-
-    const totalElapsed = Date.now() - startTime;
-    const cronElapsed = Date.now() - cronStart;
+    const elapsed = Date.now() - startTime;
 
     if (booked && bookResult) {
-      const summary = `Booked ${bookResult.restaurant} at ${bookResult.time} on ${bookResult.date}`;
-      console.log(`[Cron] DONE ✓ ${summary} | loops=${loopCount} apiCalls=${apiCallCount} slotsFound=${totalSlotsFound} matched=${totalSlotsMatched} wafEpisodes=${wafEpisodes} elapsed=${Math.round(totalElapsed / 1000)}s cronTotal=${Math.round(cronElapsed / 1000)}s`);
-      if (snipeId) await updateScheduledSnipe(snipeId, { status: "completed", result: `${summary} (${loopCount} loops, ${apiCallCount} API calls, ${Math.round(totalElapsed / 1000)}s)` });
+      const result = `Booked ${bookResult.restaurant} at ${bookResult.time} on ${bookResult.date} (${attempt} attempts, ${Math.round(elapsed / 1000)}s)`;
+      console.log(`[Cron] DONE ✓ ${result}`);
+      if (snipeId) await updateScheduledSnipe(snipeId, { status: "completed", result });
     } else {
-      const failBreakdown = (failCount403 + failCount412 + failCountOther) > 0
-        ? ` [failures: ${failCount403} locked/exclusive, ${failCount412} already-booked, ${failCountOther} other]`
-        : "";
-      const reason = totalSlotsFound === 0
-        ? wafEpisodes > 0
-          ? `WAF blocked all requests (${wafEpisodes} episodes) — no slots retrieved`
-          : `API returned 200 but no slots found (${apiCallCount} calls) — verify drop time or slots were grabbed instantly`
-        : totalSlotsMatched === 0
-          ? `Slots found (${totalSlotsFound}) but none matched preferred times [${preferredTimes.join(",")} ±${timeRadius}m]`
-          : `Slots matched (${totalSlotsMatched}) but all booking attempts failed${failBreakdown}`;
-      console.log(`[Cron] DONE ✗ ${reason} | loops=${loopCount} apiCalls=${apiCallCount} slotsFound=${totalSlotsFound} matched=${totalSlotsMatched} wafEpisodes=${wafEpisodes} elapsed=${Math.round(totalElapsed / 1000)}s cronTotal=${Math.round(cronElapsed / 1000)}s`);
-      if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: reason });
+      const result = `No booking after ${attempt} attempts in ${Math.round(elapsed / 1000)}s — fails: 403=${failCount403} 412=${failCount412} other=${failCountOther}`;
+      console.log(`[Cron] DONE ✗ ${result}`);
+      if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result });
     }
 
-    return NextResponse.json({ booked, bookResult, loops: loopCount, apiCalls: apiCallCount, elapsed: totalElapsed });
+    return NextResponse.json({ booked, bookResult, attempts: attempt, elapsed });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
-    console.error(`[Cron] FATAL error after ${Math.round((Date.now() - startTime) / 1000)}s: ${msg}`);
-    if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: `Fatal: ${msg}` });
+    console.error(`[Cron] ERROR: ${msg}`);
+    if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result: msg });
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
