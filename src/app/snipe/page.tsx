@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { restaurants } from "@/data/restaurants";
 import SnipePanel from "@/components/SnipePanel";
 import AppNav from "@/components/AppNav";
-import { loadSettings } from "@/components/SettingsDrawer";
+import { loadSettings, getActiveProfile } from "@/components/SettingsDrawer";
 import type { AppSettings } from "@/components/SettingsDrawer";
 
 const resyRestaurants = restaurants.filter(
@@ -28,15 +28,18 @@ export default function SnipePage() {
     }
     setLoggedInUser(user);
 
-    // Load Resy auth
-    const storedAuth = localStorage.getItem("resyAuth");
-    if (storedAuth) {
-      try { setResyAuth(JSON.parse(storedAuth)); } catch { /* ignore */ }
+    // Load settings from active profile (auth token lives in settings.resyAuthToken)
+    const activeProfile = getActiveProfile() ?? undefined;
+    const s = loadSettings(activeProfile);
+    setSettings(s);
+
+    // Derive auth state from saved token
+    if (s.resyAuthToken) {
+      setResyAuth({ authenticated: true, authToken: s.resyAuthToken });
+    } else {
+      setResyAuth({ authenticated: false });
     }
 
-    // Load settings
-    const s = loadSettings();
-    setSettings(s);
     setReady(true);
   }, [router]);
 
