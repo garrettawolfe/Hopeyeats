@@ -116,34 +116,57 @@ function randomUserAgent(): string {
 
 const cookieJar: Map<string, string> = new Map();
 
-/** Extract set-cookie headers and store them. */
+// Expiry time (ms since epoch) per cookie name; undefined = session cookie
+const cookieExpiry: Map<string, number> = new Map();
+
+/** Extract set-cookie headers and store them with expiry. */
 function captureResponseCookies(response: Response): void {
-  // response.headers.getSetCookie() returns all Set-Cookie headers
   const setCookies = response.headers.getSetCookie?.() ?? [];
-  for (const raw of setCookies) {
-    const nameValue = raw.split(";")[0]; // "name=value"
+  const raws = setCookies.length > 0
+    ? setCookies
+    : (response.headers.get("set-cookie") ?? "").split(/,(?=[^ ])/).filter(Boolean);
+
+  for (const raw of raws) {
+    const parts = raw.split(";");
+    const nameValue = parts[0].trim();
     const eqIdx = nameValue.indexOf("=");
-    if (eqIdx > 0) {
-      const name = nameValue.substring(0, eqIdx).trim();
-      const value = nameValue.substring(eqIdx + 1).trim();
-      cookieJar.set(name, value);
-    }
-  }
-  // Fallback: try raw header (some runtimes combine them)
-  if (setCookies.length === 0) {
-    const combined = response.headers.get("set-cookie");
-    if (combined) {
-      for (const part of combined.split(/,(?=[^ ])/)) {
-        const nameValue = part.split(";")[0].trim();
-        const eqIdx = nameValue.indexOf("=");
-        if (eqIdx > 0) {
-          const name = nameValue.substring(0, eqIdx).trim();
-          const value = nameValue.substring(eqIdx + 1).trim();
-          cookieJar.set(name, value);
-        }
+    if (eqIdx <= 0) continue;
+    const name = nameValue.substring(0, eqIdx).trim();
+    const value = nameValue.substring(eqIdx + 1).trim();
+    cookieJar.set(name, value);
+
+    // Parse Max-Age for expiry tracking (Imperva uses Max-Age, not Expires)
+    const maxAgePart = parts.find(p => p.trim().toLowerCase().startsWith("max-age="));
+    if (maxAgePart) {
+      const seconds = parseInt(maxAgePart.split("=")[1]);
+      if (!isNaN(seconds) && seconds > 0) {
+        cookieExpiry.set(name, Date.now() + seconds * 1000);
       }
     }
   }
+}
+
+/** Remove cookies that have passed their Max-Age. Returns count removed. */
+export function pruneExpiredCookies(): number {
+  const now = Date.now();
+  let removed = 0;
+  for (const [name, expiresAt] of cookieExpiry) {
+    if (now >= expiresAt) {
+      cookieJar.delete(name);
+      cookieExpiry.delete(name);
+      removed++;
+    }
+  }
+  return removed;
+}
+
+/** True if any Imperva cookies will expire within the next `withinMs` milliseconds. */
+export function cookiesExpiringSoon(withinMs: number = 30_000): boolean {
+  const threshold = Date.now() + withinMs;
+  for (const [name, expiresAt] of cookieExpiry) {
+    if (cookieJar.has(name) && expiresAt <= threshold) return true;
+  }
+  return false;
 }
 
 /** Build Cookie header string from stored cookies. */
@@ -406,6 +429,27 @@ export async function warmUpImperva(): Promise<void> {
   }
 }
 
+/** Export the current cookie jar as a plain object (for Redis persistence). */
+export function exportCookies(): Record<string, string> {
+  return Object.fromEntries(cookieJar.entries());
+}
+
+/**
+ * Import cookies from the pre-warm Redis cache and mark them as trusted.
+ * Calling this before warmUpImperva() prevents the warmup from discarding them.
+ */
+export function importCookiesFromPrewarm(cookies: Record<string, string>): void {
+  cookieJar.clear();
+  for (const [name, value] of Object.entries(cookies)) {
+    cookieJar.set(name, value);
+  }
+  // Tell warmUpImperva() these cookies are known-good — skip re-warming
+  lastPollHadSuccess = true;
+  lastWarmUpAt = Date.now();
+  const names = Object.keys(cookies).join(", ");
+  console.log(`[Resy] Loaded ${Object.keys(cookies).length} cookies from pre-warm cache: [${names}]`);
+}
+
 // ─── Core Types ──────────────────────────────────────────────────────────────
 
 export interface ResySlot {
@@ -417,6 +461,11 @@ export interface ResySlot {
     id: number;
     token: string;
     type: string;
+    is_visible?: boolean;
+  };
+  // exclusive.id != 0 means Crown/GDA/invite-only — not publicly bookable
+  exclusive?: {
+    id: number;
   };
   size: {
     min: number;
@@ -665,7 +714,18 @@ export function parseSlots(
   if (venues.length === 0) return [];
 
   const venue = venues[0];
-  const slots = venue.slots ?? [];
+  const rawSlots = venue.slots ?? [];
+
+  // Filter out Crown/exclusive slots that normal users can't book
+  const slots = rawSlots.filter((slot) => {
+    const isExclusive = (slot.exclusive?.id ?? 0) !== 0;
+    const isHidden = slot.config?.is_visible === false;
+    return !isExclusive && !isHidden;
+  });
+  const hiddenCount = rawSlots.length - slots.length;
+  if (hiddenCount > 0) {
+    console.log(`[Resy] ${venueName}: skipping ${hiddenCount} Crown/exclusive slot(s), ${slots.length} public slot(s) remain`);
+  }
 
   return slots.map((slot) => {
     const dateTime = slot.date?.start ?? "";
