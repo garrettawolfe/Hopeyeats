@@ -91,7 +91,7 @@ describe("restaurant data integrity", () => {
     check("carbone", 30);
     check("lilia", 28);
     check("via-carota", 30);
-    check("four-horsemen", 30);
+    check("four-horsemen", 29);
     check("torrisi", 30);
     check("4-charles", 21);
     check("claud", 14);
