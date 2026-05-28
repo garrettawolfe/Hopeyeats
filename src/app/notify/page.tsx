@@ -5,6 +5,7 @@ import { restaurants } from "@/data/restaurants";
 import type { NotifyRecord } from "@/lib/scheduledSnipes";
 import AppNav from "@/components/AppNav";
 import { loadSettings, getActiveProfile } from "@/components/SettingsDrawer";
+import type { DayTimeWindow } from "@/components/SettingsDrawer";
 
 const resyRestaurants = restaurants.filter(
   (r) => r.resyVenueId && (r.reservationMethod === "resy" || r.reservationMethod === "both"),
@@ -40,6 +41,8 @@ export default function NotifyPage() {
   const [customDate, setCustomDate] = useState("");
   const [partySize, setPartySize] = useState(2);
   const [timePreferred, setTimePreferred] = useState("19:00");
+  const [useTimeWindows, setUseTimeWindows] = useState(false);
+  const [dayTimeWindows, setDayTimeWindows] = useState<Record<string, DayTimeWindow>>({});
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<NotifyResult[] | null>(null);
   const [records, setRecords] = useState<NotifyRecord[]>([]);
@@ -51,6 +54,7 @@ export default function NotifyPage() {
     const s = loadSettings(profile);
     setAuthToken(s.resyAuthToken ?? "");
     setPartySize(s.partySize ?? 2);
+    setDayTimeWindows(s.dayTimeWindows ?? {});
   }, []);
 
   const fetchRecords = useCallback(async () => {
@@ -104,15 +108,24 @@ export default function NotifyPage() {
       r.neighborhood.toLowerCase().includes(search.toLowerCase()),
   );
 
+  // Build per-date time preferences from settings windows (e.g. friday → "19:30")
+  function timeForDate(iso: string): string | undefined {
+    if (!useTimeWindows) return timePreferred || undefined;
+    const dow = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"][new Date(iso + "T12:00:00").getDay()];
+    return dayTimeWindows[dow]?.start ?? (timePreferred || undefined);
+  }
+
   const handleSubmit = async () => {
     if (!authToken) {
-      alert("No auth token — log in on the main page first.");
+      alert("No auth token — open Settings in the top nav to connect your Resy account.");
       return;
     }
     if (selectedIds.size === 0 || selectedDates.size === 0) {
       alert("Select at least one restaurant and one date.");
       return;
     }
+
+    const sortedDates = Array.from(selectedDates).sort();
 
     setLoading(true);
     setResults(null);
@@ -122,9 +135,10 @@ export default function NotifyPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           restaurantIds: Array.from(selectedIds),
-          dates: Array.from(selectedDates).sort(),
+          dates: sortedDates,
           partySize,
-          timePreferred: timePreferred || undefined,
+          // per-date times: { "2026-06-06": "19:30", ... }
+          dateTimes: Object.fromEntries(sortedDates.map((d) => [d, timeForDate(d)])),
           authToken,
         }),
       });
@@ -255,29 +269,57 @@ export default function NotifyPage() {
 
       {/* Preferred Time */}
       <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
-        <h2 className="font-semibold text-gray-900 mb-1">Preferred Time</h2>
-        <p className="text-xs text-gray-400 mb-3">Resy will use this as your preferred dining time when notifying.</p>
-        <div className="flex gap-2 flex-wrap">
-          {["18:00", "18:30", "19:00", "19:30", "20:00", "20:30", "21:00"].map((t) => (
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="font-semibold text-gray-900">Preferred Time</h2>
+          {Object.keys(dayTimeWindows).length > 0 && (
             <button
-              key={t}
-              onClick={() => setTimePreferred(t)}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                timePreferred === t
-                  ? "bg-orange-500 text-white shadow-sm"
-                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+              onClick={() => setUseTimeWindows((v) => !v)}
+              className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
+                useTimeWindows
+                  ? "bg-orange-500 text-white"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
               }`}
             >
-              {t}
+              {useTimeWindows ? "Using my windows" : "Use my time windows"}
             </button>
-          ))}
-          <input
-            type="time"
-            value={timePreferred}
-            onChange={(e) => setTimePreferred(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300"
-          />
+          )}
         </div>
+        {useTimeWindows ? (
+          <div className="mt-2 space-y-1">
+            <p className="text-xs text-gray-400 mb-2">Each date will use your settings time window for that day of week.</p>
+            {Object.entries(dayTimeWindows).map(([day, w]) => (
+              <div key={day} className="flex items-center gap-2 text-sm text-gray-600">
+                <span className="capitalize w-24">{day}</span>
+                <span className="text-gray-400">{w.start} – {w.end}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <>
+            <p className="text-xs text-gray-400 mb-3">Resy will use this as your preferred dining time when notifying.</p>
+            <div className="flex gap-2 flex-wrap">
+              {["18:00", "18:30", "19:00", "19:30", "20:00", "20:30", "21:00"].map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTimePreferred(t)}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                    timePreferred === t
+                      ? "bg-orange-500 text-white shadow-sm"
+                      : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
+              <input
+                type="time"
+                value={timePreferred}
+                onChange={(e) => setTimePreferred(e.target.value)}
+                className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300"
+              />
+            </div>
+          </>
+        )}
       </section>
 
       {/* Restaurant Selection */}

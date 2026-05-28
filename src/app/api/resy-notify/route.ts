@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { warmUpImperva, hasValidCookies, getCookieHeader } from "@/lib/resyApi";
+import { warmUpImperva, hasValidCookies, buildHeaders } from "@/lib/resyApi";
 import {
   addNotifyRecords,
   listNotifyRecords,
@@ -9,7 +9,6 @@ import {
 import { restaurants } from "@/data/restaurants";
 
 const RESY_API_BASE = "https://api.resy.com";
-const RESY_API_KEY = "VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5";
 
 /**
  * POST /api/resy-notify
@@ -21,7 +20,8 @@ export async function POST(request: Request) {
   const t0 = Date.now();
   try {
     const body = await request.json();
-    const { restaurantIds, dates, partySize = 2, timePreferred, authToken } = body;
+    const { restaurantIds, dates, partySize = 2, timePreferred, dateTimes, authToken } = body;
+    // dateTimes: Record<string, string> maps date → preferred time (overrides timePreferred)
 
     if (!authToken) {
       return NextResponse.json({ error: "authToken required" }, { status: 401 });
@@ -48,7 +48,8 @@ export async function POST(request: Request) {
     for (const restaurant of targets) {
       for (const date of dates) {
         try {
-          const notifyResult = await placeNotify(authToken, restaurant.resyVenueId!, date, partySize, timePreferred);
+          const effectiveTime = (dateTimes as Record<string, string>)?.[date] ?? timePreferred;
+          const notifyResult = await placeNotify(authToken, restaurant.resyVenueId!, date, partySize, effectiveTime);
           results.push({
             restaurantId: restaurant.id,
             restaurantName: restaurant.name,
@@ -140,17 +141,8 @@ async function placeNotify(
   partySize: number,
   timePreferred?: string,
 ): Promise<{ success: boolean; error?: string }> {
-  const cookies = getCookieHeader();
-  const headers: Record<string, string> = {
-    Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
-    "X-Resy-Auth-Token": authToken,
-    "X-Resy-Universal-Auth": authToken,
-    "Content-Type": "application/x-www-form-urlencoded",
-    Accept: "application/json, text/plain, */*",
-    Origin: "https://resy.com",
-    Referer: "https://resy.com/",
-  };
-  if (cookies) headers["Cookie"] = cookies;
+  const headers = buildHeaders(authToken);
+  headers["Content-Type"] = "application/x-www-form-urlencoded";
 
   const params: Record<string, string> = {
     venue_id: venueId.toString(),
@@ -159,6 +151,8 @@ async function placeNotify(
   };
   if (timePreferred) params.time_preferred = `${timePreferred}:00`;
   const body = new URLSearchParams(params).toString();
+
+  let lastError = "";
 
   // Try /3/notify first, then /3/waitlist as fallback
   for (const endpoint of ["/3/notify", "/3/waitlist"]) {
@@ -171,14 +165,21 @@ async function placeNotify(
 
       if (res.ok || res.status === 201) return { success: true };
       if (res.status === 409) return { success: true }; // already on notify list
-      if (res.status === 404) continue; // endpoint doesn't exist, try next
 
       const text = await res.text().catch(() => "");
-      return { success: false, error: `HTTP ${res.status}: ${text.slice(0, 120)}` };
-    } catch {
+      console.log(`[Notify] ${endpoint} → ${res.status}: ${text.slice(0, 200)}`);
+      lastError = `HTTP ${res.status}: ${text.slice(0, 120)}`;
+
+      // 404 = endpoint unsupported; 400/422 = bad request — try fallback for both
+      if (res.status === 404 || res.status === 400 || res.status === 422) continue;
+
+      // Any other error (401, 403, 5xx) — don't bother with fallback
+      return { success: false, error: lastError };
+    } catch (err) {
+      lastError = String(err);
       continue;
     }
   }
 
-  return { success: false, error: "Both /3/notify and /3/waitlist returned 404" };
+  return { success: false, error: lastError || "Both /3/notify and /3/waitlist failed" };
 }

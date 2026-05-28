@@ -509,7 +509,7 @@ export interface AvailabilitySlot {
 
 // ─── Headers ─────────────────────────────────────────────────────────────────
 
-function buildHeaders(authToken?: string): Record<string, string> {
+export function buildHeaders(authToken?: string): Record<string, string> {
   const persona = currentPersona;
   const referer = randomReferer(); // #3: Varied referer
 
