@@ -214,12 +214,12 @@ export default function NotifyPage() {
             type="date"
             value={customDate}
             onChange={(e) => setCustomDate(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300"
+            className="flex-1 min-w-0 border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300"
           />
           <button
             onClick={addCustomDate}
             disabled={!customDate}
-            className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50 transition-colors"
+            className="flex-shrink-0 px-3 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50 transition-colors"
           >
             Add Date
           </button>
@@ -248,12 +248,12 @@ export default function NotifyPage() {
 
       {/* Restaurant Selection */}
       <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="font-semibold text-gray-900">
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <h2 className="font-semibold text-gray-900 min-w-0">
             Restaurants{" "}
             <span className="text-gray-400 font-normal text-sm">({selectedIds.size} selected)</span>
           </h2>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-shrink-0">
             <button
               onClick={() => setSelectedIds(new Set(resyRestaurants.map((r) => r.id)))}
               className="text-xs px-2 py-1 bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition-colors"

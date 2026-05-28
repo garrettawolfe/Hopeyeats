@@ -1037,7 +1037,7 @@ function HomeInner() {
 
         {appMode === "monitor" && (<>
         {/* City Tabs */}
-        <div className="flex gap-1 mb-3">
+        <div className="flex flex-wrap gap-1 mb-3">
           {([["all", "All Cities"], ["nyc", "NYC"], ["miami", "Miami"], ["hamptons", "Hamptons"]] as const).map(([key, label]) => (
             <button
               key={key}
