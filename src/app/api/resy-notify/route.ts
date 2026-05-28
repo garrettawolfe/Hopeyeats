@@ -21,7 +21,7 @@ export async function POST(request: Request) {
   const t0 = Date.now();
   try {
     const body = await request.json();
-    const { restaurantIds, dates, partySize = 2, authToken } = body;
+    const { restaurantIds, dates, partySize = 2, timePreferred, authToken } = body;
 
     if (!authToken) {
       return NextResponse.json({ error: "authToken required" }, { status: 401 });
@@ -48,7 +48,7 @@ export async function POST(request: Request) {
     for (const restaurant of targets) {
       for (const date of dates) {
         try {
-          const notifyResult = await placeNotify(authToken, restaurant.resyVenueId!, date, partySize);
+          const notifyResult = await placeNotify(authToken, restaurant.resyVenueId!, date, partySize, timePreferred);
           results.push({
             restaurantId: restaurant.id,
             restaurantName: restaurant.name,
@@ -138,6 +138,7 @@ async function placeNotify(
   venueId: number,
   date: string,
   partySize: number,
+  timePreferred?: string,
 ): Promise<{ success: boolean; error?: string }> {
   const cookies = getCookieHeader();
   const headers: Record<string, string> = {
@@ -151,11 +152,13 @@ async function placeNotify(
   };
   if (cookies) headers["Cookie"] = cookies;
 
-  const body = new URLSearchParams({
+  const params: Record<string, string> = {
     venue_id: venueId.toString(),
     day: date,
     num_seats: partySize.toString(),
-  }).toString();
+  };
+  if (timePreferred) params.time_preferred = `${timePreferred}:00`;
+  const body = new URLSearchParams(params).toString();
 
   // Try /3/notify first, then /3/waitlist as fallback
   for (const endpoint of ["/3/notify", "/3/waitlist"]) {

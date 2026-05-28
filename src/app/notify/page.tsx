@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { restaurants } from "@/data/restaurants";
 import type { NotifyRecord } from "@/lib/scheduledSnipes";
 import AppNav from "@/components/AppNav";
+import { loadSettings, getActiveProfile } from "@/components/SettingsDrawer";
 
 const resyRestaurants = restaurants.filter(
   (r) => r.resyVenueId && (r.reservationMethod === "resy" || r.reservationMethod === "both"),
@@ -38,6 +39,7 @@ export default function NotifyPage() {
   const [selectedDates, setSelectedDates] = useState<Set<string>>(new Set());
   const [customDate, setCustomDate] = useState("");
   const [partySize, setPartySize] = useState(2);
+  const [timePreferred, setTimePreferred] = useState("19:00");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<NotifyResult[] | null>(null);
   const [records, setRecords] = useState<NotifyRecord[]>([]);
@@ -45,8 +47,10 @@ export default function NotifyPage() {
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    const token = localStorage.getItem("resyAuthToken") ?? "";
-    setAuthToken(token);
+    const profile = getActiveProfile() ?? undefined;
+    const s = loadSettings(profile);
+    setAuthToken(s.resyAuthToken ?? "");
+    setPartySize(s.partySize ?? 2);
   }, []);
 
   const fetchRecords = useCallback(async () => {
@@ -120,6 +124,7 @@ export default function NotifyPage() {
           restaurantIds: Array.from(selectedIds),
           dates: Array.from(selectedDates).sort(),
           partySize,
+          timePreferred: timePreferred || undefined,
           authToken,
         }),
       });
@@ -245,6 +250,33 @@ export default function NotifyPage() {
               {size}
             </button>
           ))}
+        </div>
+      </section>
+
+      {/* Preferred Time */}
+      <section className="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+        <h2 className="font-semibold text-gray-900 mb-1">Preferred Time</h2>
+        <p className="text-xs text-gray-400 mb-3">Resy will use this as your preferred dining time when notifying.</p>
+        <div className="flex gap-2 flex-wrap">
+          {["18:00", "18:30", "19:00", "19:30", "20:00", "20:30", "21:00"].map((t) => (
+            <button
+              key={t}
+              onClick={() => setTimePreferred(t)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                timePreferred === t
+                  ? "bg-orange-500 text-white shadow-sm"
+                  : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+          <input
+            type="time"
+            value={timePreferred}
+            onChange={(e) => setTimePreferred(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300"
+          />
         </div>
       </section>
 
