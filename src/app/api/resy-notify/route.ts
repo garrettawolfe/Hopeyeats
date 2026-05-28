@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { warmUpImperva, hasValidCookies, buildHeaders } from "@/lib/resyApi";
+import { warmUpImperva, warmUpVenue, buildHeaders } from "@/lib/resyApi";
 import {
   addNotifyRecords,
   listNotifyRecords,
@@ -55,16 +55,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Too many requests (${totalReqs}). Reduce restaurants or time slots to stay under 50 total.` }, { status: 400 });
     }
 
-    // Always warm up for notify — POST to /3/notify needs fresh WAF session
-    log("Warming up WAF session for notify...");
+    // Global warm-up first
+    log("Global WAF warm-up...");
     await warmUpImperva();
-    log("Warm-up complete");
+    log("Global warm-up complete");
 
     type NotifyResult = { restaurantId: string; restaurantName: string; date: string; time?: string; success: boolean; error?: string };
     const results: NotifyResult[] = [];
     const recordsToSave: NotifyRecord[] = [];
 
     for (const restaurant of targets) {
+      // Per-restaurant venue warm-up: browse to the restaurant's Resy page
+      // to establish a session that looks like a user who just browsed there
+      if (restaurant.resyUrl) {
+        log(`Venue warm-up: ${restaurant.name}`);
+        await warmUpVenue(restaurant.resyUrl);
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
       for (const date of dates) {
         // dateTimes[date] can be a string[] (multi-time) or string (legacy)
         const rawTimes = (dateTimes as Record<string, string | string[]>)?.[date];
@@ -73,7 +81,7 @@ export async function POST(request: Request) {
         for (const time of times) {
           const label = `${restaurant.name} ${date}${time ? " " + time : ""}`;
           try {
-            const notifyResult = await placeNotify(authToken, restaurant.resyVenueId!, date, partySize, time || undefined, serverLogs);
+            const notifyResult = await placeNotify(authToken, restaurant.resyVenueId!, date, partySize, time || undefined, restaurant.resyUrl ?? undefined, serverLogs);
             if (notifyResult.success) {
               log(`✓ ${label}`);
             } else {
@@ -172,6 +180,7 @@ async function placeNotify(
   date: string,
   partySize: number,
   timePreferred?: string,
+  venueUrl?: string,
   logBuf?: string[],
 ): Promise<{ success: boolean; error?: string }> {
   function pushLog(msg: string) {
@@ -180,48 +189,75 @@ async function placeNotify(
     logBuf?.push(`${ts} ${msg}`);
   }
 
-  const headers = buildHeaders(authToken);
-  headers["Content-Type"] = "application/x-www-form-urlencoded";
-
-  const params: Record<string, string> = {
-    venue_id: venueId.toString(),
+  const structData = {
     day: date,
-    num_seats: partySize.toString(),
-    struct_data: JSON.stringify({
-      day: date,
-      num_seats: partySize,
-      venue_id: venueId,
-      ...(timePreferred ? { time_slot: `${timePreferred}:00` } : {}),
-    }),
+    num_seats: partySize,
+    venue_id: venueId,
+    ...(timePreferred ? { time_slot: `${timePreferred}:00` } : {}),
   };
-  if (timePreferred) params.time_preferred = `${timePreferred}:00`;
-  const body = new URLSearchParams(params).toString();
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // Try JSON body first (fewer WAF triggers than form-encoded), then form-encoded fallback
+  const attempts: Array<{ contentType: string; body: string }> = [
+    {
+      contentType: "application/json",
+      body: JSON.stringify({
+        venue_id: venueId,
+        day: date,
+        num_seats: partySize,
+        struct_data: structData,
+        ...(timePreferred ? { time_preferred: `${timePreferred}:00` } : {}),
+      }),
+    },
+    {
+      contentType: "application/x-www-form-urlencoded",
+      body: new URLSearchParams({
+        venue_id: venueId.toString(),
+        day: date,
+        num_seats: partySize.toString(),
+        struct_data: JSON.stringify(structData),
+        ...(timePreferred ? { time_preferred: `${timePreferred}:00` } : {}),
+      }).toString(),
+    },
+  ];
+
+  for (let i = 0; i < attempts.length; i++) {
+    const { contentType, body } = attempts[i];
+    const headers = buildHeaders(authToken);
+    headers["Content-Type"] = contentType;
+    // Use the restaurant's actual page as Referer — more realistic session
+    if (venueUrl) headers["Referer"] = venueUrl;
+
     try {
-      const res = await fetch(`${RESY_API_BASE}/3/notify`, {
-        method: "POST",
-        headers: buildHeaders(authToken), // rebuild headers each attempt (rotates persona)
-        body,
-      });
+      const res = await fetch(`${RESY_API_BASE}/3/notify`, { method: "POST", headers, body });
 
       if (res.ok || res.status === 201) return { success: true };
       if (res.status === 409) return { success: true }; // already on notify list
 
       const text = await res.text().catch(() => "");
-      pushLog(`attempt ${attempt} /3/notify → ${res.status}: ${text.slice(0, 200)}`);
+      pushLog(`[${contentType.includes("json") ? "json" : "form"}] /3/notify → ${res.status}: ${text.slice(0, 300)}`);
 
-      // 502 = Imperva WAF block — re-warm and retry once
-      if (res.status === 502 && attempt === 1) {
-        pushLog("WAF block (502) — re-warming...");
-        await warmUpImperva();
-        await new Promise((r) => setTimeout(r, 1000));
+      if (res.status === 502 && i === 0) {
+        // WAF block on JSON — try form-encoded next
+        pushLog("WAF 502 on JSON — trying form-encoded...");
         continue;
+      }
+      if (res.status === 502 && i === attempts.length - 1) {
+        // Both formats blocked — re-warm and final retry
+        pushLog("WAF 502 on both formats — re-warming for final attempt...");
+        await warmUpImperva();
+        await new Promise((r) => setTimeout(r, 1500));
+        const headers2 = buildHeaders(authToken);
+        headers2["Content-Type"] = "application/json";
+        if (venueUrl) headers2["Referer"] = venueUrl;
+        const res3 = await fetch(`${RESY_API_BASE}/3/notify`, { method: "POST", headers: headers2, body: attempts[0].body });
+        if (res3.ok || res3.status === 201 || res3.status === 409) return { success: true };
+        const t3 = await res3.text().catch(() => "");
+        return { success: false, error: `HTTP ${res3.status}: ${t3.slice(0, 200)}` };
       }
 
       return { success: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
     } catch (err) {
-      if (attempt === 2) return { success: false, error: String(err) };
+      if (i === attempts.length - 1) return { success: false, error: String(err) };
     }
   }
   return { success: false, error: "All attempts failed" };

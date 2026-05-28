@@ -429,7 +429,49 @@ export async function warmUpImperva(): Promise<void> {
   }
 }
 
-/** Export the current cookie jar as a plain object (for Redis persistence). */
+/**
+ * Visit a specific Resy venue page to establish a more legitimate WAF session.
+ * Call this before posting notify for that venue — mimics user browsing to the page.
+ */
+export async function warmUpVenue(venueUrl: string): Promise<void> {
+  const persona = currentPersona;
+  try {
+    // 1. Hit the restaurant's actual resy.com HTML page
+    const r1 = await fetch(venueUrl, {
+      method: "GET",
+      headers: {
+        "User-Agent": persona.userAgent,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": persona.acceptLanguage,
+        "Accept-Encoding": "gzip, deflate, br",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        Referer: "https://www.google.com/",
+        ...(getCookieHeader() ? { Cookie: getCookieHeader()! } : {}),
+      },
+      redirect: "follow",
+    });
+    captureResponseCookies(r1);
+
+    // 2. Hit the API venue endpoint with the page URL as Referer
+    const r2 = await fetch(`https://api.resy.com/3/venue?url_slug=${encodeURIComponent(venueUrl.split("/").pop() ?? "")}&location_id=1`, {
+      method: "GET",
+      headers: {
+        ...buildHeaders(),
+        Referer: venueUrl,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+      },
+    });
+    captureResponseCookies(r2);
+  } catch {
+    // Best-effort — don't throw
+  }
+}
+
+
 export function exportCookies(): Record<string, string> {
   return Object.fromEntries(cookieJar.entries());
 }
