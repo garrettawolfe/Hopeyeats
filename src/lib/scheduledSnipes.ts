@@ -113,6 +113,32 @@ export async function loadPrewarmCookies(
   return cookies;
 }
 
+// ─── Global Cookie Pool (Cross-snipe WAF session sharing) ─────────────────
+// When multiple snipes run concurrently on the same Vercel Fluid Compute
+// instance (same IP), they share the same Imperva session. Storing the
+// active WAF cookies globally means each warm-up is immediately available
+// to all concurrent workers — avoiding redundant warm-up requests that
+// collectively increase the per-IP rate and trigger WAF faster.
+// TTL: 3 minutes (Imperva incap_ses cookies are session-scoped; we refresh
+// aggressively anyway so staleness is bounded).
+
+const GLOBAL_COOKIES_KEY = "wolfepack:cookies:global";
+
+export async function saveGlobalCookies(
+  cookies: Record<string, string>,
+): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  if (Object.keys(cookies).length === 0) return;
+  await r.set(GLOBAL_COOKIES_KEY, cookies, { ex: 180 });
+}
+
+export async function loadGlobalCookies(): Promise<Record<string, string> | null> {
+  const r = getRedis();
+  if (!r) return null;
+  return r.get<Record<string, string>>(GLOBAL_COOKIES_KEY);
+}
+
 // ─── Cleanup: Remove old completed/failed snipes ───────────────────────────
 
 export async function cleanupOldSnipes(): Promise<number> {

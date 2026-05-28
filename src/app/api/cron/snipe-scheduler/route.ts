@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { Receiver } from "@upstash/qstash";
-import { findAvailability, parseSlots, resetConsecutiveErrors, warmUpImperva, importCookiesFromPrewarm } from "@/lib/resyApi";
+import { findAvailability, parseSlots, resetConsecutiveErrors, warmUpImperva, importCookiesFromPrewarm, hasValidCookies, exportCookies, pruneExpiredCookies, cookiesExpiringSoon } from "@/lib/resyApi";
 import {
   getSlotDetails,
   bookReservation,
@@ -8,7 +8,7 @@ import {
   type SlotDetails,
 } from "@/lib/resyBooking";
 import { restaurants } from "@/data/restaurants";
-import { updateScheduledSnipe, loadPrewarmCookies } from "@/lib/scheduledSnipes";
+import { updateScheduledSnipe, loadPrewarmCookies, loadGlobalCookies, saveGlobalCookies } from "@/lib/scheduledSnipes";
 
 export const maxDuration = 120;
 
@@ -107,22 +107,33 @@ export async function POST(request: Request) {
   // If the same Vercel region handles both requests, loading them here means
   // we skip a redundant warmup and start with fresh WAF cookies immediately.
 
-  if (snipeId) {
-    try {
+  try {
+    // 1. Try global cookie pool first (shared by all concurrent snipes on same instance)
+    const globalCookies = await loadGlobalCookies();
+    if (globalCookies && Object.keys(globalCookies).length > 0) {
+      importCookiesFromPrewarm(globalCookies);
+      console.log(`[Cron] Loaded ${Object.keys(globalCookies).length} cookies from global pool`);
+    }
+
+    // 2. Per-snipe pre-warm cookies override global (they're more specific / equally fresh)
+    if (snipeId) {
       const cached = await loadPrewarmCookies(snipeId);
       if (cached && Object.keys(cached).length > 0) {
         importCookiesFromPrewarm(cached);
-        console.log(`[Cron] Pre-warm cookies loaded from Redis — skipping redundant warmup`);
-      } else {
-        console.log(`[Cron] No pre-warm cookies in Redis — will warm up fresh`);
+        console.log(`[Cron] Pre-warm cookies loaded from Redis (${Object.keys(cached).length}) — overriding global`);
       }
-    } catch (err) {
-      console.warn("[Cron] Could not load pre-warm cookies from Redis (non-fatal):", err instanceof Error ? err.message : String(err));
     }
+
+    if (!hasValidCookies()) {
+      console.log(`[Cron] No valid cookies in Redis — will warm up fresh`);
+    }
+  } catch (err) {
+    console.warn("[Cron] Could not load cookies from Redis (non-fatal):", err instanceof Error ? err.message : String(err));
   }
 
   try {
     await warmUpImperva();
+    if (hasValidCookies()) saveGlobalCookies(exportCookies()).catch(() => {});
   } catch (err) {
     console.warn("[Cron] Warmup failed (continuing without cookies):", err instanceof Error ? err.message : String(err));
   }
@@ -166,21 +177,49 @@ export async function POST(request: Request) {
   let failCount412 = 0;
   let failCountOther = 0;
 
+  // Stagger between parallel findAvailability calls — prevents burst pattern that
+  // Imperva's behavioral ML flags. findAvailability's internal 150–800ms jitter only
+  // applies relative to the shared lastRequestAt, which all concurrent calls read
+  // simultaneously, so without this stagger they all fire nearly at once.
+  const PARALLEL_STAGGER_MS = 200;
+
   try {
     while (Date.now() < deadline && !booked) {
       loopCount++;
       const callsThisLoop = targets.length * dates.length;
 
-      // Fire all restaurant×date availability checks in parallel.
-      // Each findAvailability already adds 150–800ms jitter internally, spreading the burst.
-      // allSettled preserves order so we process targets in their original priority sequence.
+      // Prune expired Imperva cookies before each loop to avoid sending dead sessions.
+      const pruned = pruneExpiredCookies();
+      if (pruned > 0) {
+        console.warn(`[Cron] Pruned ${pruned} expired cookie(s) — may need re-warm`);
+      }
+
+      // Proactively re-warm if cookies are about to expire in the next 30s
+      if (cookiesExpiringSoon(30_000) && hasValidCookies()) {
+        console.log(`[Cron] Cookies expiring soon — proactive re-warm`);
+        try {
+          await warmUpImperva();
+          if (hasValidCookies()) saveGlobalCookies(exportCookies()).catch(() => {});
+        } catch { /* non-fatal */ }
+      }
+
+      // Fire all restaurant×date availability checks in parallel with a stagger.
+      // 200ms between each pair spreads 6 requests over ~1s, preventing the burst
+      // pattern that Imperva's behavioral ML uses to distinguish bots from browsers.
+      // allSettled preserves input order so we process targets in priority sequence.
       const pairs = targets.flatMap((r) => dates.map((d: string) => ({ restaurant: r, date: d })));
       apiCallCount += pairs.length;
 
       const availResults = await Promise.allSettled(
-        pairs.map(({ restaurant, date }) =>
-          findAvailability(restaurant.resyVenueId!, date, partySize, authToken)
-            .then((result) => ({ restaurant, date, result }))
+        pairs.map(({ restaurant, date }, idx) =>
+          new Promise<{ restaurant: typeof targets[0]; date: string; result: Awaited<ReturnType<typeof findAvailability>> }>(
+            (resolve, reject) => setTimeout(
+              () => findAvailability(restaurant.resyVenueId!, date, partySize, authToken)
+                .then((result) => resolve({ restaurant, date, result }))
+                .catch(reject),
+              idx * PARALLEL_STAGGER_MS
+            )
+          )
         )
       );
 
@@ -332,7 +371,10 @@ export async function POST(request: Request) {
         const remaining = Math.round((deadline - Date.now()) / 1000);
         console.warn(`[Cron] WAF episode #${wafEpisodes} — all ${nullsThisLoop} calls blocked (loop=${loopCount}, ${remaining}s left). Backing off ${(backoffMs / 1000).toFixed(1)}s then re-warming.`);
         await new Promise((r) => setTimeout(r, backoffMs));
-        try { await warmUpImperva(); } catch { /* non-fatal */ }
+        try {
+          await warmUpImperva();
+          if (hasValidCookies()) saveGlobalCookies(exportCookies()).catch(() => {});
+        } catch { /* non-fatal */ }
       }
 
       // Periodic progress log every 10s so Vercel shows activity

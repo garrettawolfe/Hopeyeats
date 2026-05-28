@@ -115,35 +115,57 @@ function randomUserAgent(): string {
 // Subsequent requests MUST include these cookies or get blocked with 500.
 
 const cookieJar: Map<string, string> = new Map();
+// Expiry time (ms since epoch) per cookie name; undefined = session cookie
+const cookieExpiry: Map<string, number> = new Map();
 
-/** Extract set-cookie headers and store them. */
+/** Extract set-cookie headers and store them with expiry. */
 function captureResponseCookies(response: Response): void {
-  // response.headers.getSetCookie() returns all Set-Cookie headers
   const setCookies = response.headers.getSetCookie?.() ?? [];
-  for (const raw of setCookies) {
-    const nameValue = raw.split(";")[0]; // "name=value"
+  const raws = setCookies.length > 0
+    ? setCookies
+    : (response.headers.get("set-cookie") ?? "").split(/,(?=[^ ])/).filter(Boolean);
+
+  for (const raw of raws) {
+    const parts = raw.split(";");
+    const nameValue = parts[0].trim();
     const eqIdx = nameValue.indexOf("=");
-    if (eqIdx > 0) {
-      const name = nameValue.substring(0, eqIdx).trim();
-      const value = nameValue.substring(eqIdx + 1).trim();
-      cookieJar.set(name, value);
-    }
-  }
-  // Fallback: try raw header (some runtimes combine them)
-  if (setCookies.length === 0) {
-    const combined = response.headers.get("set-cookie");
-    if (combined) {
-      for (const part of combined.split(/,(?=[^ ])/)) {
-        const nameValue = part.split(";")[0].trim();
-        const eqIdx = nameValue.indexOf("=");
-        if (eqIdx > 0) {
-          const name = nameValue.substring(0, eqIdx).trim();
-          const value = nameValue.substring(eqIdx + 1).trim();
-          cookieJar.set(name, value);
-        }
+    if (eqIdx <= 0) continue;
+    const name = nameValue.substring(0, eqIdx).trim();
+    const value = nameValue.substring(eqIdx + 1).trim();
+    cookieJar.set(name, value);
+
+    // Parse Max-Age for expiry tracking (Imperva uses Max-Age, not Expires)
+    const maxAgePart = parts.find(p => p.trim().toLowerCase().startsWith("max-age="));
+    if (maxAgePart) {
+      const seconds = parseInt(maxAgePart.split("=")[1]);
+      if (!isNaN(seconds) && seconds > 0) {
+        cookieExpiry.set(name, Date.now() + seconds * 1000);
       }
     }
   }
+}
+
+/** Remove cookies that have passed their Max-Age. Returns count removed. */
+export function pruneExpiredCookies(): number {
+  const now = Date.now();
+  let removed = 0;
+  for (const [name, expiresAt] of cookieExpiry) {
+    if (now >= expiresAt) {
+      cookieJar.delete(name);
+      cookieExpiry.delete(name);
+      removed++;
+    }
+  }
+  return removed;
+}
+
+/** True if any Imperva cookies will expire within the next `withinMs` milliseconds. */
+export function cookiesExpiringSoon(withinMs: number = 30_000): boolean {
+  const threshold = Date.now() + withinMs;
+  for (const [name, expiresAt] of cookieExpiry) {
+    if (cookieJar.has(name) && expiresAt <= threshold) return true;
+  }
+  return false;
 }
 
 /** Build Cookie header string from stored cookies. */
