@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from "react";
 import { restaurants } from "@/data/restaurants";
 import type { NotifyRecord } from "@/lib/scheduledSnipes";
 import AppNav from "@/components/AppNav";
+import LogPanel from "@/components/LogPanel";
+import type { LogEntry } from "@/components/LogPanel";
 import { loadSettings, getActiveProfile } from "@/components/SettingsDrawer";
 import type { DayTimeWindow } from "@/components/SettingsDrawer";
 
@@ -53,6 +55,7 @@ export default function NotifyPage() {
   const [partySize, setPartySize] = useState(2);
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<NotifyResult[] | null>(null);
+  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [records, setRecords] = useState<NotifyRecord[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [search, setSearch] = useState("");
@@ -125,6 +128,7 @@ export default function NotifyPage() {
   );
 
   const totalRequests = selectedIds.size * Array.from(selectedDates).reduce((sum, d) => sum + timesForDate(d).length, 0);
+  const overLimit = totalRequests > 50;
 
   const handleSubmit = async () => {
     if (!authToken) {
@@ -140,6 +144,7 @@ export default function NotifyPage() {
 
     setLoading(true);
     setResults(null);
+    setLogEntries([]);
     try {
       const res = await fetch("/api/resy-notify", {
         method: "POST",
@@ -154,6 +159,18 @@ export default function NotifyPage() {
       });
       const data = await res.json();
       setResults(data.results ?? []);
+      // Convert server logs → LogEntry[]
+      const logs: LogEntry[] = (data.serverLogs ?? []).map((line: string) => {
+        const ts = line.slice(0, 8);
+        const rest = line.slice(9);
+        const level: LogEntry["level"] =
+          rest.startsWith("✓") ? "success"
+          : rest.startsWith("✗") ? "error"
+          : rest.startsWith("Warning") ? "warn"
+          : "info";
+        return { ts, level, msg: rest };
+      });
+      setLogEntries(logs);
       await fetchRecords();
     } catch (err) {
       alert("Error placing notifies: " + String(err));
@@ -402,9 +419,14 @@ export default function NotifyPage() {
         </section>
 
         {/* Submit */}
+        {overLimit && (
+          <div className="mb-3 px-4 py-2 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+            Too many requests ({totalRequests}). Max is 50 — reduce restaurants or time slots.
+          </div>
+        )}
         <button
           onClick={handleSubmit}
-          disabled={loading || selectedIds.size === 0 || selectedDates.size === 0 || selectedTimes.size === 0}
+          disabled={loading || selectedIds.size === 0 || selectedDates.size === 0 || selectedTimes.size === 0 || overLimit}
           className="w-full py-3 bg-orange-500 text-white font-semibold rounded-xl hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mb-4"
         >
           {loading
@@ -438,6 +460,13 @@ export default function NotifyPage() {
               ))}
             </div>
           </section>
+        )}
+
+        {/* Server Logs */}
+        {logEntries.length > 0 && (
+          <div className="mb-4">
+            <LogPanel entries={logEntries} title="Server Logs" defaultOpen={logEntries.some((e) => e.level === "error")} />
+          </div>
         )}
 
         {/* Pending Notifies */}
