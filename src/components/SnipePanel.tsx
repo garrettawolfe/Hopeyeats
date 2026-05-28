@@ -246,7 +246,9 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     } catch { /* silent */ }
   };
 
-  const resyRestaurants = restaurants.filter(r => r.resyVenueId);
+  const resyRestaurants = restaurants
+    .filter(r => r.resyVenueId)
+    .sort((a, b) => (a.advanceDays ?? 0) - (b.advanceDays ?? 0));
   const canSchedule = isAuthenticated && selectedIds.size > 0 && selectedTimes.size > 0 && dates.length > 0 && !!authToken;
   const firstSelected = restaurants.find(r => selectedIds.has(r.id));
 

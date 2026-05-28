@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import Link from "next/link";
 import { restaurants } from "@/data/restaurants";
 import type { AvailabilitySlot } from "@/lib/resyApi";
 import type { MonitorPollResult } from "@/lib/resyMonitor";
@@ -991,8 +992,8 @@ function HomeInner() {
           </div>
         )}
 
-        {/* Mode Toggle: Monitor vs Snipe */}
-        <div className="flex gap-1 mb-4">
+        {/* Mode Toggle: Monitor vs Snipe vs Notify */}
+        <div className="flex flex-wrap gap-1 mb-4">
           {([["monitor", "Availability Monitor"], ["snipe", "Snipe Mode"]] as const).map(([key, label]) => (
             <button
               key={key}
@@ -1006,6 +1007,12 @@ function HomeInner() {
               {key === "snipe" && "⚡ "}{label}
             </button>
           ))}
+          <Link
+            href="/notify"
+            className="px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors bg-white border border-stone-200 text-stone-500 hover:bg-orange-50 hover:border-orange-300 hover:text-orange-700"
+          >
+            🔔 Notify
+          </Link>
         </div>
 
         {/* Snipe Panel (Mode 1) */}
