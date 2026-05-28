@@ -20,8 +20,8 @@ export async function POST(request: Request) {
   const t0 = Date.now();
   try {
     const body = await request.json();
-    const { restaurantIds, dates, partySize = 2, timePreferred, dateTimes, authToken } = body;
-    // dateTimes: Record<string, string> maps date → preferred time (overrides timePreferred)
+    const { restaurantIds, dates, partySize = 2, dateTimes, authToken } = body;
+    // dateTimes: Record<string, string[]> maps date → array of preferred times
 
     if (!authToken) {
       return NextResponse.json({ error: "authToken required" }, { status: 401 });
@@ -41,48 +41,54 @@ export async function POST(request: Request) {
       await warmUpImperva();
     }
 
-    type NotifyResult = { restaurantId: string; restaurantName: string; date: string; success: boolean; error?: string };
+    type NotifyResult = { restaurantId: string; restaurantName: string; date: string; time?: string; success: boolean; error?: string };
     const results: NotifyResult[] = [];
     const recordsToSave: NotifyRecord[] = [];
 
     for (const restaurant of targets) {
       for (const date of dates) {
-        try {
-          const effectiveTime = (dateTimes as Record<string, string>)?.[date] ?? timePreferred;
-          const notifyResult = await placeNotify(authToken, restaurant.resyVenueId!, date, partySize, effectiveTime);
-          results.push({
-            restaurantId: restaurant.id,
-            restaurantName: restaurant.name,
-            date,
-            success: notifyResult.success,
-            error: notifyResult.error,
-          });
-          recordsToSave.push({
-            id: `${restaurant.id}:${date}:${partySize}:${Date.now()}`,
-            restaurantId: restaurant.id,
-            restaurantName: restaurant.name,
-            venueId: restaurant.resyVenueId!,
-            date,
-            partySize,
-            placedAt: new Date().toISOString(),
-            status: notifyResult.success ? "placed" : "failed",
-            error: notifyResult.error,
-          });
-          await new Promise((r) => setTimeout(r, 300 + Math.random() * 200));
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          results.push({ restaurantId: restaurant.id, restaurantName: restaurant.name, date, success: false, error: errMsg });
-          recordsToSave.push({
-            id: `${restaurant.id}:${date}:${partySize}:${Date.now()}`,
-            restaurantId: restaurant.id,
-            restaurantName: restaurant.name,
-            venueId: restaurant.resyVenueId!,
-            date,
-            partySize,
-            placedAt: new Date().toISOString(),
-            status: "failed",
-            error: errMsg,
-          });
+        // dateTimes[date] can be a string[] (multi-time) or string (legacy)
+        const rawTimes = (dateTimes as Record<string, string | string[]>)?.[date];
+        const times: string[] = Array.isArray(rawTimes) ? rawTimes : rawTimes ? [rawTimes] : [undefined as unknown as string];
+
+        for (const time of times) {
+          try {
+            const notifyResult = await placeNotify(authToken, restaurant.resyVenueId!, date, partySize, time || undefined);
+            results.push({
+              restaurantId: restaurant.id,
+              restaurantName: restaurant.name,
+              date,
+              time: time || undefined,
+              success: notifyResult.success,
+              error: notifyResult.error,
+            });
+            recordsToSave.push({
+              id: `${restaurant.id}:${date}:${time ?? "any"}:${partySize}:${Date.now()}`,
+              restaurantId: restaurant.id,
+              restaurantName: restaurant.name,
+              venueId: restaurant.resyVenueId!,
+              date,
+              partySize,
+              placedAt: new Date().toISOString(),
+              status: notifyResult.success ? "placed" : "failed",
+              error: notifyResult.error,
+            });
+            await new Promise((r) => setTimeout(r, 200 + Math.random() * 150));
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            results.push({ restaurantId: restaurant.id, restaurantName: restaurant.name, date, time: time || undefined, success: false, error: errMsg });
+            recordsToSave.push({
+              id: `${restaurant.id}:${date}:${time ?? "any"}:${partySize}:${Date.now()}`,
+              restaurantId: restaurant.id,
+              restaurantName: restaurant.name,
+              venueId: restaurant.resyVenueId!,
+              date,
+              partySize,
+              placedAt: new Date().toISOString(),
+              status: "failed",
+              error: errMsg,
+            });
+          }
         }
       }
     }
@@ -148,38 +154,30 @@ async function placeNotify(
     venue_id: venueId.toString(),
     day: date,
     num_seats: partySize.toString(),
+    struct_data: JSON.stringify({
+      day: date,
+      num_seats: partySize,
+      venue_id: venueId,
+      ...(timePreferred ? { time_slot: `${timePreferred}:00` } : {}),
+    }),
   };
   if (timePreferred) params.time_preferred = `${timePreferred}:00`;
   const body = new URLSearchParams(params).toString();
 
-  let lastError = "";
+  try {
+    const res = await fetch(`${RESY_API_BASE}/3/notify`, {
+      method: "POST",
+      headers,
+      body,
+    });
 
-  // Try /3/notify first, then /3/waitlist as fallback
-  for (const endpoint of ["/3/notify", "/3/waitlist"]) {
-    try {
-      const res = await fetch(`${RESY_API_BASE}${endpoint}`, {
-        method: "POST",
-        headers,
-        body,
-      });
+    if (res.ok || res.status === 201) return { success: true };
+    if (res.status === 409) return { success: true }; // already on notify list
 
-      if (res.ok || res.status === 201) return { success: true };
-      if (res.status === 409) return { success: true }; // already on notify list
-
-      const text = await res.text().catch(() => "");
-      console.log(`[Notify] ${endpoint} → ${res.status}: ${text.slice(0, 200)}`);
-      lastError = `HTTP ${res.status}: ${text.slice(0, 120)}`;
-
-      // 404 = endpoint unsupported; 400/422 = bad request — try fallback for both
-      if (res.status === 404 || res.status === 400 || res.status === 422) continue;
-
-      // Any other error (401, 403, 5xx) — don't bother with fallback
-      return { success: false, error: lastError };
-    } catch (err) {
-      lastError = String(err);
-      continue;
-    }
+    const text = await res.text().catch(() => "");
+    console.log(`[Notify] /3/notify → ${res.status}: ${text.slice(0, 200)}`);
+    return { success: false, error: `HTTP ${res.status}: ${text.slice(0, 120)}` };
+  } catch (err) {
+    return { success: false, error: String(err) };
   }
-
-  return { success: false, error: lastError || "Both /3/notify and /3/waitlist failed" };
 }
