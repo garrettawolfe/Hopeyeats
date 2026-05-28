@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import Link from "next/link";
 import { restaurants } from "@/data/restaurants";
 import type { AvailabilitySlot } from "@/lib/resyApi";
 import type { MonitorPollResult } from "@/lib/resyMonitor";
@@ -21,7 +20,7 @@ import SettingsDrawer, {
 } from "@/components/SettingsDrawer";
 import RestaurantMonitorCard from "@/components/RestaurantMonitorCard";
 import LoginPage from "@/components/LoginPage";
-import SnipePanel from "@/components/SnipePanel";
+import AppNav from "@/components/AppNav";
 import DebugPanel from "@/components/DebugPanel";
 import { ToastProvider, useToast } from "@/components/Toast";
 import type { LogEntry, LogLevel } from "@/lib/logger";
@@ -134,7 +133,6 @@ function HomeInner() {
   const [mealFilter, setMealFilter] = useState<"all" | "dinner" | "bar" | "brunch">("all");
   const [activePartySize, setActivePartySize] = useState<2 | 4>(4);
   const [loggedInUser, setLoggedInUser] = useState<string | null>(null);
-  const [appMode, setAppMode] = useState<"monitor" | "snipe">("monitor");
   const [debugLog, setDebugLog] = useState<LogEntry[]>([]);
   const [showDebugLog, setShowDebugLog] = useState(false);
   const [consecutiveFails, setConsecutiveFails] = useState(0);
@@ -164,6 +162,10 @@ function HomeInner() {
 
   // --- Initialize profiles on mount ---
   useEffect(() => {
+    // Restore loggedInUser from sessionStorage on mount
+    const storedUser = sessionStorage.getItem("wolfepack:user");
+    if (storedUser) setLoggedInUser(storedUser);
+
     let profs = getProfiles();
     let active = getActiveProfile();
 
@@ -755,6 +757,7 @@ function HomeInner() {
     return (
       <LoginPage
         onLogin={(username) => {
+          sessionStorage.setItem("wolfepack:user", username);
           setLoggedInUser(username);
           const existing = getProfiles();
           if (!existing.includes(username)) {
@@ -829,7 +832,7 @@ function HomeInner() {
               </button>
 
               <button
-                onClick={() => setLoggedInUser(null)}
+                onClick={() => { sessionStorage.removeItem("wolfepack:user"); setLoggedInUser(null); }}
                 className="text-xs text-stone-500 hover:text-stone-300 transition-colors"
                 title="Logout"
               >
@@ -840,6 +843,8 @@ function HomeInner() {
             </div>
           </div>
         </div>
+
+        <AppNav />
 
         {/* Progress bar + activity feed */}
         {isPolling && (
@@ -992,57 +997,6 @@ function HomeInner() {
           </div>
         )}
 
-        {/* Mode Toggle: Monitor vs Snipe vs Notify */}
-        <div className="flex flex-wrap gap-1 mb-4">
-          {([["monitor", "Availability Monitor"], ["snipe", "Snipe Mode"]] as const).map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setAppMode(key)}
-              className={`px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
-                appMode === key
-                  ? key === "snipe" ? "bg-red-600 text-white" : "bg-charcoal text-white"
-                  : "bg-white border border-stone-200 text-stone-500 hover:bg-stone-50"
-              }`}
-            >
-              {key === "snipe" && "⚡ "}{label}
-            </button>
-          ))}
-          <Link
-            href="/notify"
-            className="px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors bg-white border border-stone-200 text-stone-500 hover:bg-orange-50 hover:border-orange-300 hover:text-orange-700"
-          >
-            🔔 Notify
-          </Link>
-        </div>
-
-        {/* Snipe Panel (Mode 1) */}
-        {appMode === "snipe" && (
-          <div className="mb-6">
-            <SnipePanel
-              restaurants={resyRestaurants}
-              isAuthenticated={resyAuth?.authenticated ?? false}
-              authToken={resyAuth?.authToken}
-              partySize={settings.partySize ?? 4}
-              dayTimeWindows={mealFilter === "brunch" ? DEFAULT_BRUNCH_TIME_WINDOWS : settings.dayTimeWindows}
-              preferredDays={mealFilter === "brunch" ? ["saturday", "sunday"] : settings.preferredDays}
-              onLog={(level, msg, data) => addLog(level, "snipe", msg, data)}
-              onBooked={(event) => {
-                addToast(`Sniped! ${event.restaurant} at ${event.time} on ${event.date}`, "success", 10000);
-                setBookingLog((prev) => [{
-                  id: `snipe-${Date.now()}`,
-                  restaurantName: String(event.restaurant),
-                  date: String(event.date),
-                  time: String(event.time),
-                  partySize: settings.partySize ?? 4,
-                  status: "success" as const,
-                  timestamp: new Date().toISOString(),
-                }, ...prev].slice(0, 50));
-              }}
-            />
-          </div>
-        )}
-
-        {appMode === "monitor" && (<>
         {/* City Tabs */}
         <div className="flex flex-wrap gap-1 mb-3">
           {([["all", "All Cities"], ["nyc", "NYC"], ["miami", "Miami"], ["hamptons", "Hamptons"]] as const).map(([key, label]) => (
@@ -1174,7 +1128,6 @@ function HomeInner() {
             Rate limited — backing off {Math.round((latestResult.rateLimitStats.backoffRemaining ?? 0) / 1000)}s
           </div>
         )}
-        </>)}
 
         <footer className="mt-12 pt-6 border-t border-stone-200 text-center text-[10px] sm:text-xs text-stone-400 pb-4">
           <p>WolfePack Eats · Monitoring {resyRestaurants.length} restaurants on Resy</p>

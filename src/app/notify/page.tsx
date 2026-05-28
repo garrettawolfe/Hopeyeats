@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { restaurants } from "@/data/restaurants";
 import type { NotifyRecord } from "@/lib/scheduledSnipes";
-import Link from "next/link";
+import AppNav from "@/components/AppNav";
 
 const resyRestaurants = restaurants.filter(
   (r) => r.resyVenueId && (r.reservationMethod === "resy" || r.reservationMethod === "both"),
@@ -151,14 +151,16 @@ export default function NotifyPage() {
   const totalRequests = selectedIds.size * selectedDates.size;
 
   return (
-    <main className="min-h-screen bg-[#FAF7F2] p-6 max-w-4xl mx-auto">
-      <div className="flex items-center gap-4 mb-6">
-        <Link href="/" className="text-sm text-gray-500 hover:text-gray-800 transition-colors">
-          ← Back
-        </Link>
-        <h1 className="text-2xl font-bold text-gray-900">Notify Mode</h1>
-      </div>
+    <div className="min-h-screen bg-[#FAF7F2]">
+      <header className="sticky top-0 z-30 bg-charcoal text-white">
+        <div className="max-w-4xl mx-auto px-3 sm:px-6 py-3 sm:py-4">
+          <h1 className="font-serif text-xl sm:text-2xl tracking-tight">WolfePack Eats</h1>
+          <p className="text-stone-400 text-[10px] sm:text-xs mt-0.5">Notify Mode</p>
+        </div>
+        <AppNav />
+      </header>
 
+      <main className="max-w-4xl mx-auto px-3 sm:px-6 py-4 sm:py-6">
       <p className="text-gray-600 text-sm mb-6">
         Mass-place Resy &quot;Notify Me&quot; requests for multiple restaurants and dates. Resy will
         email you when a table opens up.
@@ -394,6 +396,7 @@ export default function NotifyPage() {
           </div>
         )}
       </section>
-    </main>
+      </main>
+    </div>
   );
 }
