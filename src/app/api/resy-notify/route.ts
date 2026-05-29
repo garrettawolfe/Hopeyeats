@@ -197,6 +197,42 @@ async function placeNotify(
   headers["Content-Type"] = "application/x-www-form-urlencoded";
   if (venueUrl) headers["Referer"] = venueUrl;
 
+  // If a Cloudflare Worker relay is configured, route through it to avoid
+  // Imperva IP-reputation blocks on Vercel datacenter IPs
+  const relayUrl = process.env.RESY_RELAY_URL;
+  const relaySecret = process.env.RESY_RELAY_SECRET;
+
+  if (relayUrl && relaySecret) {
+    try {
+      pushLog(`Routing via CF relay: ${relayUrl}`);
+      const relayRes = await fetch(relayUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ headers, body: formBody, secret: relaySecret }),
+      });
+
+      if (!relayRes.ok) {
+        pushLog(`CF relay HTTP error ${relayRes.status} — falling back to direct`);
+      } else {
+        const data = await relayRes.json() as { status: number; ok: boolean; body: string; error?: string };
+        if (data.error) {
+          pushLog(`CF relay error: ${data.error} — falling back to direct`);
+        } else {
+          if (data.status === 200 || data.status === 201) return { success: true };
+          if (data.status === 409) return { success: true }; // already on notify list
+          if (data.status === 502) {
+            return { success: false, error: "WAF blocked via CF relay (Imperva also blocks Cloudflare IPs)" };
+          }
+          pushLog(`CF relay → Resy ${data.status}: ${data.body?.slice(0, 200)}`);
+          return { success: false, error: `HTTP ${data.status}: ${data.body?.slice(0, 200)}` };
+        }
+      }
+    } catch (relayErr) {
+      pushLog(`CF relay exception: ${relayErr} — falling back to direct`);
+    }
+  }
+
+  // Direct attempt (may be blocked by Imperva IP reputation from Vercel)
   try {
     const res = await fetch(`${RESY_API_BASE}/3/notify`, { method: "POST", headers, body: formBody });
 
@@ -206,7 +242,6 @@ async function placeNotify(
     const text = await res.text().catch(() => "");
 
     if (res.status === 502) {
-      // Imperva WAF blocks POST from Vercel datacenter IPs — re-warming doesn't help
       return { success: false, error: "WAF blocked (Imperva IP block — Vercel datacenter IP rejected)" };
     }
 

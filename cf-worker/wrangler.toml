@@ -1,0 +1,6 @@
+name = "resy-notify-relay"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+# No KV, Durable Objects, or bindings needed — pure fetch relay
+# Secrets are set via: npx wrangler secret put RELAY_SECRET
