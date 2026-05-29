@@ -25,13 +25,20 @@ const DOW_FULL = ["sunday", "monday", "tuesday", "wednesday", "thursday", "frida
 function getUpcomingDays(count: number): { iso: string; dow: number }[] {
   const days: { iso: string; dow: number }[] = [];
   const now = new Date();
-  for (let i = 1; i <= count; i++) {
+  for (let i = 0; i < count; i++) {
     const d = new Date(now);
     d.setDate(now.getDate() + i);
     const iso = d.toISOString().split("T")[0];
     days.push({ iso, dow: d.getDay() });
   }
   return days;
+}
+
+function fmt12h(t: string): string {
+  const [h, m] = t.split(":").map(Number);
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 || 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
 function formatDate(iso: string): string {
@@ -132,8 +139,22 @@ export default function NotifyPage() {
       r.neighborhood.toLowerCase().includes(search.toLowerCase()),
   );
 
-  const totalRequests = selectedIds.size * Array.from(selectedDates).reduce((sum, d) => sum + timesForDate(d).length, 0);
-  const overLimit = totalRequests > 50;
+  const slotsPerRestaurant = Array.from(selectedDates).reduce((sum, d) => sum + timesForDate(d).length, 0);
+  const totalRequests = selectedIds.size * slotsPerRestaurant;
+  const batchCount = slotsPerRestaurant > 0 ? Math.ceil(totalRequests / 50) : 1;
+
+  function parseLogs(serverLogs: string[]): LogEntry[] {
+    return serverLogs.map((line: string) => {
+      const ts = line.slice(0, 8);
+      const rest = line.slice(9);
+      const level: LogEntry["level"] =
+        rest.startsWith("✓") ? "success"
+        : rest.startsWith("✗") ? "error"
+        : rest.startsWith("Warning") ? "warn"
+        : "info";
+      return { ts, level, msg: rest };
+    });
+  }
 
   const handleSubmit = async () => {
     if (!authToken) {
@@ -146,36 +167,46 @@ export default function NotifyPage() {
     }
 
     const sortedDates = Array.from(selectedDates).sort();
+    const dateTimes = Object.fromEntries(sortedDates.map((d) => [d, timesForDate(d)]));
+
+    // Split restaurants into batches of ≤50 total requests each
+    const allIds = Array.from(selectedIds);
+    const batchSize = slotsPerRestaurant > 0 ? Math.max(1, Math.floor(50 / slotsPerRestaurant)) : allIds.length;
+    const batches: string[][] = [];
+    for (let i = 0; i < allIds.length; i += batchSize) {
+      batches.push(allIds.slice(i, i + batchSize));
+    }
 
     setLoading(true);
     setResults(null);
     setLogEntries([]);
+
+    const allResults: NotifyResult[] = [];
+    const allLogs: LogEntry[] = [];
+
     try {
-      const res = await fetch("/api/resy-notify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          restaurantIds: Array.from(selectedIds),
-          dates: sortedDates,
-          partySize,
-          dateTimes: Object.fromEntries(sortedDates.map((d) => [d, timesForDate(d)])),
-          authToken,
-        }),
-      });
-      const data = await res.json();
-      setResults(data.results ?? []);
-      // Convert server logs → LogEntry[]
-      const logs: LogEntry[] = (data.serverLogs ?? []).map((line: string) => {
-        const ts = line.slice(0, 8);
-        const rest = line.slice(9);
-        const level: LogEntry["level"] =
-          rest.startsWith("✓") ? "success"
-          : rest.startsWith("✗") ? "error"
-          : rest.startsWith("Warning") ? "warn"
-          : "info";
-        return { ts, level, msg: rest };
-      });
-      setLogEntries(logs);
+      for (let b = 0; b < batches.length; b++) {
+        if (batches.length > 1) {
+          allLogs.push({ ts: new Date().toLocaleTimeString("en-US", { hour12: false }).slice(0, 8), level: "info", msg: `Batch ${b + 1}/${batches.length} — ${batches[b].length} restaurants` });
+          setLogEntries([...allLogs]);
+        }
+        const res = await fetch("/api/resy-notify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            restaurantIds: batches[b],
+            dates: sortedDates,
+            partySize,
+            dateTimes,
+            authToken,
+          }),
+        });
+        const data = await res.json();
+        allResults.push(...(data.results ?? []));
+        allLogs.push(...parseLogs(data.serverLogs ?? []));
+        setResults([...allResults]);
+        setLogEntries([...allLogs]);
+      }
       await fetchRecords();
     } catch (err) {
       alert("Error placing notifies: " + String(err));
@@ -376,7 +407,7 @@ export default function NotifyPage() {
                           : "bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100"
                       }`}
                     >
-                      {t}
+                      {fmt12h(t)}
                     </button>
                   );
                 })}
@@ -452,18 +483,18 @@ export default function NotifyPage() {
         </section>
 
         {/* Submit */}
-        {overLimit && (
-          <div className="mb-3 px-4 py-2 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
-            Too many requests ({totalRequests}). Max is 50 — reduce restaurants or time slots.
+        {batchCount > 1 && !loading && (
+          <div className="mb-3 px-4 py-2 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700">
+            {totalRequests} requests — will run in {batchCount} batches automatically.
           </div>
         )}
         <button
           onClick={handleSubmit}
-          disabled={loading || selectedIds.size === 0 || selectedDates.size === 0 || selectedTimes.size === 0 || overLimit}
+          disabled={loading || selectedIds.size === 0 || selectedDates.size === 0 || selectedTimes.size === 0}
           className="w-full py-3 bg-orange-500 text-white font-semibold rounded-xl hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors mb-4"
         >
           {loading
-            ? `Placing ${totalRequests} notifies...`
+            ? `Placing notifies${batchCount > 1 ? ` (${batchCount} batches)` : ""}...`
             : `Place Notifies — ${selectedIds.size} restaurant${selectedIds.size !== 1 ? "s" : ""} × ${selectedDates.size} date${selectedDates.size !== 1 ? "s" : ""} × ${useTimeWindows ? "windows" : `${selectedTimes.size} time${selectedTimes.size !== 1 ? "s" : ""}`}`}
         </button>
 
@@ -485,7 +516,7 @@ export default function NotifyPage() {
                 >
                   <span className="font-medium truncate max-w-[140px]">{r.restaurantName}</span>
                   <span className="text-xs opacity-70">{formatDate(r.date)}</span>
-                  {r.time && <span className="text-xs opacity-70">{r.time}</span>}
+                  {r.time && <span className="text-xs opacity-70">{fmt12h(r.time)}</span>}
                   <span className="text-xs">
                     {r.success ? "✓ placed" : `✗ ${r.error?.slice(0, 30) ?? "failed"}`}
                   </span>

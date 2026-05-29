@@ -43,18 +43,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No valid Resy restaurants found" }, { status: 400 });
     }
 
-    // Cap total requests to avoid WAF rate limits and Vercel timeout (60s)
-    // 600-1000ms per request → max ~50 requests in 50s
-    const totalSlots = dates.reduce((sum: number, d: string) => {
-      const rawTimes = (dateTimes as Record<string, string | string[]>)?.[d];
-      const times = Array.isArray(rawTimes) ? rawTimes : rawTimes ? [rawTimes] : [null];
-      return sum + times.length;
-    }, 0);
-    const totalReqs = targets.length * totalSlots;
-    if (totalReqs > 50) {
-      return NextResponse.json({ error: `Too many requests (${totalReqs}). Reduce restaurants or time slots to stay under 50 total.` }, { status: 400 });
-    }
-
     // Global warm-up first
     log("Global WAF warm-up...");
     await warmUpImperva();
@@ -204,7 +192,7 @@ async function placeNotify(
         venue_id: venueId,
         day: date,
         num_seats: partySize,
-        struct_data: structData,
+        struct_data: JSON.stringify(structData),
         ...(timePreferred ? { time_preferred: `${timePreferred}:00` } : {}),
       }),
     },
