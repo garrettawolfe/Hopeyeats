@@ -239,6 +239,20 @@ export default function NotifyPage() {
     }
   };
 
+  const handleClearFailed = async () => {
+    const failed = records.filter((r) => r.status === "failed");
+    await Promise.allSettled(
+      failed.map((r) =>
+        fetch("/api/resy-notify", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: r.id }),
+        }),
+      ),
+    );
+    setRecords((prev) => prev.filter((r) => r.status !== "failed"));
+  };
+
   const placed = results?.filter((r) => r.success).length ?? 0;
   const failed = results?.filter((r) => !r.success).length ?? 0;
 
@@ -551,13 +565,23 @@ export default function NotifyPage() {
               Pending Notifies{" "}
               <span className="text-gray-400 font-normal text-sm">({records.length})</span>
             </h2>
-            <button
-              onClick={fetchRecords}
-              disabled={loadingRecords}
-              className="text-xs text-gray-500 hover:text-gray-700 transition-colors"
-            >
-              {loadingRecords ? "Loading..." : "Refresh"}
-            </button>
+            <div className="flex items-center gap-2">
+              {records.some((r) => r.status === "failed") && (
+                <button
+                  onClick={handleClearFailed}
+                  className="text-xs text-red-500 hover:text-red-700 transition-colors"
+                >
+                  Clear failed ({records.filter((r) => r.status === "failed").length})
+                </button>
+              )}
+              <button
+                onClick={fetchRecords}
+                disabled={loadingRecords}
+                className="text-xs text-gray-500 hover:text-gray-700 transition-colors"
+              >
+                {loadingRecords ? "Loading..." : "Refresh"}
+              </button>
+            </div>
           </div>
 
           {records.length === 0 ? (

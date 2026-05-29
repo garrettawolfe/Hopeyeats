@@ -184,68 +184,40 @@ async function placeNotify(
     ...(timePreferred ? { time_slot: `${timePreferred}:00` } : {}),
   };
 
-  // Try JSON body first (fewer WAF triggers than form-encoded), then form-encoded fallback
-  const attempts: Array<{ contentType: string; body: string }> = [
-    {
-      contentType: "application/json",
-      body: JSON.stringify({
-        venue_id: venueId,
-        day: date,
-        num_seats: partySize,
-        struct_data: JSON.stringify(structData),
-        ...(timePreferred ? { time_preferred: `${timePreferred}:00` } : {}),
-      }),
-    },
-    {
-      contentType: "application/x-www-form-urlencoded",
-      body: new URLSearchParams({
-        venue_id: venueId.toString(),
-        day: date,
-        num_seats: partySize.toString(),
-        struct_data: JSON.stringify(structData),
-        ...(timePreferred ? { time_preferred: `${timePreferred}:00` } : {}),
-      }).toString(),
-    },
-  ];
+  // /3/notify only accepts form-encoded (JSON bodies return 400 "missing struct_data")
+  const formBody = new URLSearchParams({
+    venue_id: venueId.toString(),
+    day: date,
+    num_seats: partySize.toString(),
+    struct_data: JSON.stringify(structData),
+    ...(timePreferred ? { time_preferred: `${timePreferred}:00` } : {}),
+  }).toString();
 
-  for (let i = 0; i < attempts.length; i++) {
-    const { contentType, body } = attempts[i];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt === 1) {
+      // 502 WAF block on first try — re-warm and retry once
+      pushLog("WAF 502 — re-warming for retry...");
+      await warmUpImperva();
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+
     const headers = buildHeaders(authToken);
-    headers["Content-Type"] = contentType;
-    // Use the restaurant's actual page as Referer — more realistic session
+    headers["Content-Type"] = "application/x-www-form-urlencoded";
     if (venueUrl) headers["Referer"] = venueUrl;
 
     try {
-      const res = await fetch(`${RESY_API_BASE}/3/notify`, { method: "POST", headers, body });
+      const res = await fetch(`${RESY_API_BASE}/3/notify`, { method: "POST", headers, body: formBody });
 
       if (res.ok || res.status === 201) return { success: true };
       if (res.status === 409) return { success: true }; // already on notify list
 
       const text = await res.text().catch(() => "");
-      pushLog(`[${contentType.includes("json") ? "json" : "form"}] /3/notify → ${res.status}: ${text.slice(0, 300)}`);
+      pushLog(`/3/notify → ${res.status}: ${text.slice(0, 300)}`);
 
-      if (res.status === 502 && i === 0) {
-        // WAF block on JSON — try form-encoded next
-        pushLog("WAF 502 on JSON — trying form-encoded...");
-        continue;
-      }
-      if (res.status === 502 && i === attempts.length - 1) {
-        // Both formats blocked — re-warm and final retry
-        pushLog("WAF 502 on both formats — re-warming for final attempt...");
-        await warmUpImperva();
-        await new Promise((r) => setTimeout(r, 1500));
-        const headers2 = buildHeaders(authToken);
-        headers2["Content-Type"] = "application/json";
-        if (venueUrl) headers2["Referer"] = venueUrl;
-        const res3 = await fetch(`${RESY_API_BASE}/3/notify`, { method: "POST", headers: headers2, body: attempts[0].body });
-        if (res3.ok || res3.status === 201 || res3.status === 409) return { success: true };
-        const t3 = await res3.text().catch(() => "");
-        return { success: false, error: `HTTP ${res3.status}: ${t3.slice(0, 200)}` };
-      }
-
+      if (res.status === 502 && attempt === 0) continue; // retry after warmup
       return { success: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
     } catch (err) {
-      if (i === attempts.length - 1) return { success: false, error: String(err) };
+      if (attempt === 1) return { success: false, error: String(err) };
     }
   }
   return { success: false, error: "All attempts failed" };
