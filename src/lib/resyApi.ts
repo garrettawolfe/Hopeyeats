@@ -188,6 +188,17 @@ interface ProxyConfig {
 
 let proxyList: ProxyConfig[] = [];
 
+// Auto-load proxies from env var on module init
+// PROXY_URLS format: comma-separated "host:port:user:pass" or "host:port" strings
+if (process.env.PROXY_URLS) {
+  const entries = process.env.PROXY_URLS.split(",").map((s) => s.trim()).filter(Boolean);
+  proxyList = entries.map((p) => {
+    const parts = p.split(":");
+    return { host: parts[0], port: parseInt(parts[1]), username: parts[2], password: parts[3] };
+  });
+  console.log(`[Resy] Loaded ${proxyList.length} proxies from PROXY_URLS env`);
+}
+
 /**
  * Set proxy list for rotating through. Format: "host:port:username:password"
  */
@@ -429,7 +440,49 @@ export async function warmUpImperva(): Promise<void> {
   }
 }
 
-/** Export the current cookie jar as a plain object (for Redis persistence). */
+/**
+ * Visit a specific Resy venue page to establish a more legitimate WAF session.
+ * Call this before posting notify for that venue — mimics user browsing to the page.
+ */
+export async function warmUpVenue(venueUrl: string): Promise<void> {
+  const persona = currentPersona;
+  try {
+    // 1. Hit the restaurant's actual resy.com HTML page
+    const r1 = await fetch(venueUrl, {
+      method: "GET",
+      headers: {
+        "User-Agent": persona.userAgent,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": persona.acceptLanguage,
+        "Accept-Encoding": "gzip, deflate, br",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        Referer: "https://www.google.com/",
+        ...(getCookieHeader() ? { Cookie: getCookieHeader()! } : {}),
+      },
+      redirect: "follow",
+    });
+    captureResponseCookies(r1);
+
+    // 2. Hit the API venue endpoint with the page URL as Referer
+    const r2 = await fetch(`https://api.resy.com/3/venue?url_slug=${encodeURIComponent(venueUrl.split("/").pop() ?? "")}&location_id=1`, {
+      method: "GET",
+      headers: {
+        ...buildHeaders(),
+        Referer: venueUrl,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+      },
+    });
+    captureResponseCookies(r2);
+  } catch {
+    // Best-effort — don't throw
+  }
+}
+
+
 export function exportCookies(): Record<string, string> {
   return Object.fromEntries(cookieJar.entries());
 }
@@ -509,7 +562,7 @@ export interface AvailabilitySlot {
 
 // ─── Headers ─────────────────────────────────────────────────────────────────
 
-function buildHeaders(authToken?: string): Record<string, string> {
+export function buildHeaders(authToken?: string): Record<string, string> {
   const persona = currentPersona;
   const referer = randomReferer(); // #3: Varied referer
 
@@ -716,15 +769,15 @@ export function parseSlots(
   const venue = venues[0];
   const rawSlots = venue.slots ?? [];
 
-  // Filter out Crown/exclusive slots that normal users can't book
+  // Filter only Crown/GDA exclusive slots (exclusive.id !== 0)
+  // is_visible===false does NOT mean Crown — it can mean the slot is simply not yet open for booking
   const slots = rawSlots.filter((slot) => {
     const isExclusive = (slot.exclusive?.id ?? 0) !== 0;
-    const isHidden = slot.config?.is_visible === false;
-    return !isExclusive && !isHidden;
+    return !isExclusive;
   });
-  const hiddenCount = rawSlots.length - slots.length;
-  if (hiddenCount > 0) {
-    console.log(`[Resy] ${venueName}: skipping ${hiddenCount} Crown/exclusive slot(s), ${slots.length} public slot(s) remain`);
+  const crownCount = rawSlots.length - slots.length;
+  if (crownCount > 0) {
+    console.log(`[Resy] ${venueName}: skipping ${crownCount} Crown/exclusive slot(s), ${slots.length} public slot(s) remain`);
   }
 
   return slots.map((slot) => {

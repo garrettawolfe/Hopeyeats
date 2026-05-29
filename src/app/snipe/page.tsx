@@ -1,12 +1,15 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { restaurants } from "@/data/restaurants";
 import SnipePanel from "@/components/SnipePanel";
 import AppNav from "@/components/AppNav";
+import LogPanel from "@/components/LogPanel";
+import type { LogEntry } from "@/components/LogPanel";
 import { loadSettings, getActiveProfile } from "@/components/SettingsDrawer";
 import type { AppSettings } from "@/components/SettingsDrawer";
+import type { LogLevel } from "@/lib/logger";
 
 const resyRestaurants = restaurants.filter(
   (r) => r.resyVenueId && (r.reservationMethod === "resy" || r.reservationMethod === "both"),
@@ -18,6 +21,12 @@ export default function SnipePage() {
   const [resyAuth, setResyAuth] = useState<{ authenticated: boolean; authToken?: string; firstName?: string } | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [ready, setReady] = useState(false);
+  const [snipeLogs, setSnipeLogs] = useState<LogEntry[]>([]);
+
+  const addLog = useCallback((level: LogLevel, msg: string) => {
+    const ts = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    setSnipeLogs((prev) => [...prev.slice(-199), { ts, level: level as LogEntry["level"], msg }]);
+  }, []);
 
   useEffect(() => {
     // Restore session
@@ -47,6 +56,13 @@ export default function SnipePage() {
 
   const isAuthenticated = resyAuth?.authenticated ?? false;
   const authToken = resyAuth?.authToken;
+
+  // Build notification config from settings (only include channels that are configured)
+  const notificationConfig = settings ? {
+    ...(settings.notifyEmail && settings.gmailUser && settings.gmailAppPassword ? {
+      email: { enabled: true, to: settings.notifyEmail, gmailUser: settings.gmailUser, gmailAppPassword: settings.gmailAppPassword },
+    } : {}),
+  } : undefined;
 
   return (
     <div className="min-h-screen bg-cream">
@@ -91,8 +107,16 @@ export default function SnipePage() {
           partySize={settings?.partySize ?? 2}
           dayTimeWindows={settings?.dayTimeWindows}
           preferredDays={settings?.preferredDays ?? []}
-          onLog={() => {}}
+          notificationConfig={notificationConfig}
+          onLog={addLog}
         />
+        <div className="mt-4">
+          <LogPanel
+            entries={snipeLogs}
+            title="Schedule Logs"
+            defaultOpen={snipeLogs.length > 0}
+          />
+        </div>
       </main>
     </div>
   );

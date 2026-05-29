@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { warmUpImperva, hasValidCookies, getCookieHeader } from "@/lib/resyApi";
+import { warmUpImperva, warmUpVenue, buildHeaders } from "@/lib/resyApi";
 import {
   addNotifyRecords,
   listNotifyRecords,
@@ -9,7 +9,6 @@ import {
 import { restaurants } from "@/data/restaurants";
 
 const RESY_API_BASE = "https://api.resy.com";
-const RESY_API_KEY = "VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5";
 
 /**
  * POST /api/resy-notify
@@ -19,9 +18,16 @@ const RESY_API_KEY = "VbWk7s3L4KiK5fzlO7JD3Q5EYolJI7n5";
  */
 export async function POST(request: Request) {
   const t0 = Date.now();
+  const serverLogs: string[] = [];
+  function log(msg: string) {
+    console.log(`[Notify] ${msg}`);
+    serverLogs.push(`${new Date().toISOString().slice(11, 19)} ${msg}`);
+  }
+
   try {
     const body = await request.json();
-    const { restaurantIds, dates, partySize = 2, authToken } = body;
+    const { restaurantIds, dates, partySize = 2, dateTimes, authToken } = body;
+    // dateTimes: Record<string, string[]> maps date → array of preferred times
 
     if (!authToken) {
       return NextResponse.json({ error: "authToken required" }, { status: 401 });
@@ -37,51 +43,74 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No valid Resy restaurants found" }, { status: 400 });
     }
 
-    if (!hasValidCookies()) {
-      await warmUpImperva();
-    }
+    // Global warm-up first
+    log("Global WAF warm-up...");
+    await warmUpImperva();
+    log("Global warm-up complete");
 
-    type NotifyResult = { restaurantId: string; restaurantName: string; date: string; success: boolean; error?: string };
+    type NotifyResult = { restaurantId: string; restaurantName: string; date: string; time?: string; success: boolean; error?: string };
     const results: NotifyResult[] = [];
     const recordsToSave: NotifyRecord[] = [];
 
     for (const restaurant of targets) {
+      // Per-restaurant venue warm-up: browse to the restaurant's Resy page
+      // to establish a session that looks like a user who just browsed there
+      if (restaurant.resyUrl) {
+        log(`Venue warm-up: ${restaurant.name}`);
+        await warmUpVenue(restaurant.resyUrl);
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
       for (const date of dates) {
-        try {
-          const notifyResult = await placeNotify(authToken, restaurant.resyVenueId!, date, partySize);
-          results.push({
-            restaurantId: restaurant.id,
-            restaurantName: restaurant.name,
-            date,
-            success: notifyResult.success,
-            error: notifyResult.error,
-          });
-          recordsToSave.push({
-            id: `${restaurant.id}:${date}:${partySize}:${Date.now()}`,
-            restaurantId: restaurant.id,
-            restaurantName: restaurant.name,
-            venueId: restaurant.resyVenueId!,
-            date,
-            partySize,
-            placedAt: new Date().toISOString(),
-            status: notifyResult.success ? "placed" : "failed",
-            error: notifyResult.error,
-          });
-          await new Promise((r) => setTimeout(r, 300 + Math.random() * 200));
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          results.push({ restaurantId: restaurant.id, restaurantName: restaurant.name, date, success: false, error: errMsg });
-          recordsToSave.push({
-            id: `${restaurant.id}:${date}:${partySize}:${Date.now()}`,
-            restaurantId: restaurant.id,
-            restaurantName: restaurant.name,
-            venueId: restaurant.resyVenueId!,
-            date,
-            partySize,
-            placedAt: new Date().toISOString(),
-            status: "failed",
-            error: errMsg,
-          });
+        // dateTimes[date] can be a string[] (multi-time) or string (legacy)
+        const rawTimes = (dateTimes as Record<string, string | string[]>)?.[date];
+        const times: string[] = Array.isArray(rawTimes) ? rawTimes : rawTimes ? [rawTimes] : [undefined as unknown as string];
+
+        for (const time of times) {
+          const label = `${restaurant.name} ${date}${time ? " " + time : ""}`;
+          try {
+            const notifyResult = await placeNotify(authToken, restaurant.resyVenueId!, date, partySize, time || undefined, restaurant.resyUrl ?? undefined, serverLogs);
+            if (notifyResult.success) {
+              log(`✓ ${label}`);
+            } else {
+              log(`✗ ${label} — ${notifyResult.error}`);
+            }
+            results.push({
+              restaurantId: restaurant.id,
+              restaurantName: restaurant.name,
+              date,
+              time: time || undefined,
+              success: notifyResult.success,
+              error: notifyResult.error,
+            });
+            recordsToSave.push({
+              id: `${restaurant.id}:${date}:${time ?? "any"}:${partySize}:${Date.now()}`,
+              restaurantId: restaurant.id,
+              restaurantName: restaurant.name,
+              venueId: restaurant.resyVenueId!,
+              date,
+              partySize,
+              placedAt: new Date().toISOString(),
+              status: notifyResult.success ? "placed" : "failed",
+              error: notifyResult.error,
+            });
+            await new Promise((r) => setTimeout(r, 600 + Math.random() * 400));
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            log(`✗ ${label} — exception: ${errMsg}`);
+            results.push({ restaurantId: restaurant.id, restaurantName: restaurant.name, date, time: time || undefined, success: false, error: errMsg });
+            recordsToSave.push({
+              id: `${restaurant.id}:${date}:${time ?? "any"}:${partySize}:${Date.now()}`,
+              restaurantId: restaurant.id,
+              restaurantName: restaurant.name,
+              venueId: restaurant.resyVenueId!,
+              date,
+              partySize,
+              placedAt: new Date().toISOString(),
+              status: "failed",
+              error: errMsg,
+            });
+          }
         }
       }
     }
@@ -89,14 +118,14 @@ export async function POST(request: Request) {
     try {
       await addNotifyRecords(recordsToSave);
     } catch {
-      console.warn("[Notify] Failed to save records to Redis");
+      log("Warning: failed to save records to Redis");
     }
 
     const placed = results.filter((r) => r.success).length;
     const failed = results.filter((r) => !r.success).length;
-    console.log(`[Notify] DONE in ${Date.now() - t0}ms — placed=${placed} failed=${failed}`);
+    log(`DONE in ${Date.now() - t0}ms — placed=${placed} failed=${failed}`);
 
-    return NextResponse.json({ placed, failed, results });
+    return NextResponse.json({ placed, failed, results, serverLogs });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Notify error" },
@@ -138,44 +167,52 @@ async function placeNotify(
   venueId: number,
   date: string,
   partySize: number,
+  timePreferred?: string,
+  venueUrl?: string,
+  logBuf?: string[],
 ): Promise<{ success: boolean; error?: string }> {
-  const cookies = getCookieHeader();
-  const headers: Record<string, string> = {
-    Authorization: `ResyAPI api_key="${RESY_API_KEY}"`,
-    "X-Resy-Auth-Token": authToken,
-    "X-Resy-Universal-Auth": authToken,
-    "Content-Type": "application/x-www-form-urlencoded",
-    Accept: "application/json, text/plain, */*",
-    Origin: "https://resy.com",
-    Referer: "https://resy.com/",
-  };
-  if (cookies) headers["Cookie"] = cookies;
+  function pushLog(msg: string) {
+    const ts = new Date().toISOString().slice(11, 19);
+    console.log(`[Notify] ${msg}`);
+    logBuf?.push(`${ts} ${msg}`);
+  }
 
-  const body = new URLSearchParams({
+  const structData = {
+    day: date,
+    num_seats: partySize,
+    venue_id: venueId,
+    ...(timePreferred ? { time_slot: `${timePreferred}:00` } : {}),
+  };
+
+  // /3/notify only accepts form-encoded (JSON bodies return 400 "missing struct_data")
+  const formBody = new URLSearchParams({
     venue_id: venueId.toString(),
     day: date,
     num_seats: partySize.toString(),
+    struct_data: JSON.stringify(structData),
+    ...(timePreferred ? { time_preferred: `${timePreferred}:00` } : {}),
   }).toString();
 
-  // Try /3/notify first, then /3/waitlist as fallback
-  for (const endpoint of ["/3/notify", "/3/waitlist"]) {
-    try {
-      const res = await fetch(`${RESY_API_BASE}${endpoint}`, {
-        method: "POST",
-        headers,
-        body,
-      });
+  const headers = buildHeaders(authToken);
+  headers["Content-Type"] = "application/x-www-form-urlencoded";
+  if (venueUrl) headers["Referer"] = venueUrl;
 
-      if (res.ok || res.status === 201) return { success: true };
-      if (res.status === 409) return { success: true }; // already on notify list
-      if (res.status === 404) continue; // endpoint doesn't exist, try next
+  try {
+    const res = await fetch(`${RESY_API_BASE}/3/notify`, { method: "POST", headers, body: formBody });
 
-      const text = await res.text().catch(() => "");
-      return { success: false, error: `HTTP ${res.status}: ${text.slice(0, 120)}` };
-    } catch {
-      continue;
+    if (res.ok || res.status === 201) return { success: true };
+    if (res.status === 409) return { success: true }; // already on notify list
+
+    const text = await res.text().catch(() => "");
+
+    if (res.status === 502) {
+      // Imperva WAF blocks POST from Vercel datacenter IPs — re-warming doesn't help
+      return { success: false, error: "WAF blocked (Imperva IP block — Vercel datacenter IP rejected)" };
     }
-  }
 
-  return { success: false, error: "Both /3/notify and /3/waitlist returned 404" };
+    pushLog(`/3/notify → ${res.status}: ${text.slice(0, 200)}`);
+    return { success: false, error: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
 }

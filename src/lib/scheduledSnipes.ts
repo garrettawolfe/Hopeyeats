@@ -24,6 +24,11 @@ function getRedis(): Redis | null {
 
 // ─── Scheduled Snipe Types ─────────────────────────────────────────────────
 
+export interface SnipeNotificationConfig {
+  email?: { enabled: boolean; to: string; gmailUser: string; gmailAppPassword: string };
+  ntfy?: { enabled: boolean; topic: string; server?: string };
+}
+
 export interface ScheduledSnipe {
   id: string;
   restaurantIds: string[];
@@ -39,6 +44,7 @@ export interface ScheduledSnipe {
   result?: string;
   createdAt: string;
   qstashMessageId?: string;
+  notificationConfig?: SnipeNotificationConfig;
 }
 
 const SNIPES_KEY = "wolfepack:scheduled_snipes";
@@ -86,21 +92,6 @@ export async function getScheduledSnipe(id: string): Promise<ScheduledSnipe | nu
   return snipes.find((s) => s.id === id) ?? null;
 }
 
-// ─── Cleanup: Remove old completed/failed snipes ───────────────────────────
-
-export async function cleanupOldSnipes(): Promise<number> {
-  const r = getRedis();
-  if (!r) return 0;
-  const snipes = await listScheduledSnipes();
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000; // 7 days
-  const kept = snipes.filter(
-    (s) => s.status === "waiting" || s.status === "running" || new Date(s.createdAt).getTime() > cutoff,
-  );
-  const removed = snipes.length - kept.length;
-  if (removed > 0) await r.set(SNIPES_KEY, kept);
-  return removed;
-}
-
 // ─── Cookie Persistence (Pre-warm → Snipe handoff) ────────────────────────
 // Pre-warm saves Imperva cookies to Redis; snipe loads them on startup.
 // TTL of 3 minutes: long enough to bridge the 90s gap, short enough to
@@ -132,8 +123,10 @@ export async function loadPrewarmCookies(
 // When multiple snipes run concurrently on the same Vercel Fluid Compute
 // instance (same IP), they share the same Imperva session. Storing the
 // active WAF cookies globally means each warm-up is immediately available
-// to all concurrent workers — avoiding redundant warm-up requests.
-// TTL: 3 minutes.
+// to all concurrent workers — avoiding redundant warm-up requests that
+// collectively increase the per-IP rate and trigger WAF faster.
+// TTL: 3 minutes (Imperva incap_ses cookies are session-scoped; we refresh
+// aggressively anyway so staleness is bounded).
 
 const GLOBAL_COOKIES_KEY = "wolfepack:cookies:global";
 
@@ -150,6 +143,21 @@ export async function loadGlobalCookies(): Promise<Record<string, string> | null
   const r = getRedis();
   if (!r) return null;
   return r.get<Record<string, string>>(GLOBAL_COOKIES_KEY);
+}
+
+// ─── Cleanup: Remove old completed/failed snipes ───────────────────────────
+
+export async function cleanupOldSnipes(): Promise<number> {
+  const r = getRedis();
+  if (!r) return 0;
+  const snipes = await listScheduledSnipes();
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000; // 7 days
+  const kept = snipes.filter(
+    (s) => s.status === "waiting" || s.status === "running" || new Date(s.createdAt).getTime() > cutoff,
+  );
+  const removed = snipes.length - kept.length;
+  if (removed > 0) await r.set(SNIPES_KEY, kept);
+  return removed;
 }
 
 // ─── Notify Records ────────────────────────────────────────────────────────

@@ -86,6 +86,7 @@ export async function POST(request: Request) {
       partySize = 2,
       dropTime,
       authToken,
+      notificationConfig,
     } = body;
 
     if (!restaurantIds?.length || !dates?.length || !preferredTimes?.length || !dropTime || !authToken) {
@@ -115,6 +116,7 @@ export async function POST(request: Request) {
         snipeWindowSeconds,
         partySize,
         authToken,
+        ...(notificationConfig ? { notificationConfig } : {}),
       };
 
       const result = await qstash.publishJSON({
@@ -126,6 +128,22 @@ export async function POST(request: Request) {
 
       qstashMessageId = result.messageId;
       console.log(`[Scheduler] QStash scheduled snipe ${snipeId} for ${dropTime} ET (msg: ${qstashMessageId})`);
+
+      // Pre-warm the Vercel instance 90s before the snipe fires.
+      // Reduces cold-start penalty and ensures fresh Imperva cookies are ready.
+      try {
+        const prewarmNotBefore = Math.max(notBefore - 90, Math.floor(Date.now() / 1000) + 2);
+        const prewarm = await qstash.publishJSON({
+          url: `${appUrl}/api/cron/snipe-prewarm`,
+          body: { snipeId },
+          notBefore: prewarmNotBefore,
+          retries: 0,
+        });
+        console.log(`[Scheduler] Pre-warm scheduled 90s before drop (msg: ${prewarm.messageId})`);
+      } catch (err) {
+        // Non-fatal — snipe still fires, just without pre-warm
+        console.warn(`[Scheduler] Pre-warm scheduling failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
     } else {
       console.warn("[Scheduler] QStash not configured — snipe saved but won't auto-fire");
     }
@@ -144,6 +162,7 @@ export async function POST(request: Request) {
       status: "waiting",
       createdAt: new Date().toISOString(),
       qstashMessageId,
+      ...(notificationConfig ? { notificationConfig } : {}),
     };
 
     await addScheduledSnipe(snipe);

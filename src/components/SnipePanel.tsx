@@ -20,6 +20,11 @@ interface ScheduledSnipe {
   qstashScheduled?: boolean;
 }
 
+interface NotificationConfig {
+  email?: { enabled: boolean; to: string; gmailUser: string; gmailAppPassword: string };
+  ntfy?: { enabled: boolean; topic: string; server?: string };
+}
+
 interface Props {
   restaurants: Restaurant[];
   isAuthenticated: boolean;
@@ -27,6 +32,7 @@ interface Props {
   partySize: number;
   dayTimeWindows?: Record<string, { start?: string; end?: string }>;
   preferredDays?: string[];
+  notificationConfig?: NotificationConfig;
   onBooked?: (event: Record<string, unknown>) => void;
   onLog?: (level: LogLevel, msg: string, data?: Record<string, unknown>) => void;
 }
@@ -82,26 +88,36 @@ function formatDateShort(dateStr: string): string {
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
-function getDropDate(restaurant: Restaurant): string | null {
+// Returns the dining date that will drop when the snipe fires at dropTime (ET).
+// Mirrors nextDropTimestamp logic: if dropTime already passed today ET, fires tomorrow.
+function getDropDate(restaurant: Restaurant, scheduleDropTime: string): string | null {
   if (!restaurant.advanceDays) return null;
-  const d = new Date();
-  d.setDate(d.getDate() + restaurant.advanceDays);
-  return d.toISOString().split("T")[0];
+  const [h, m] = scheduleDropTime.split(":").map(Number);
+  const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const todayDropET = new Date(nowET);
+  todayDropET.setHours(h, m, 0, 0);
+  // If the drop time has already passed today, the snipe fires tomorrow
+  const fireDateET = new Date(nowET);
+  if (todayDropET.getTime() <= nowET.getTime()) {
+    fireDateET.setDate(fireDateET.getDate() + 1);
+  }
+  fireDateET.setDate(fireDateET.getDate() + restaurant.advanceDays);
+  const y = fireDateET.getFullYear();
+  const mo = String(fireDateET.getMonth() + 1).padStart(2, "0");
+  const d = String(fireDateET.getDate()).padStart(2, "0");
+  return `${y}-${mo}-${d}`;
 }
 
-export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, dayTimeWindows, onLog }: Props) {
+export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, dayTimeWindows, notificationConfig, onLog }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [snipePartySize, setSnipePartySize] = useState(defaultPartySize);
-  const [dates, setDates] = useState<string[]>(() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    return [d.toISOString().split("T")[0]];
-  });
+  const [dates, setDates] = useState<string[]>([]);
+  const [datesCustomized, setDatesCustomized] = useState(false);
   const [dateInput, setDateInput] = useState("");
   const [selectedTimes, setSelectedTimes] = useState<Set<string>>(new Set(["19:00", "19:30", "20:00"]));
   const [timesCustomized, setTimesCustomized] = useState(false);
   const [timeRadius, setTimeRadius] = useState(30);
-  const [snipeWindow, setSnipeWindow] = useState(60);
+  const [snipeWindow, setSnipeWindow] = useState(90);
   const [scheduleDropTime, setScheduleDropTime] = useState("09:00");
   const [schedulingInProgress, setSchedulingInProgress] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -124,19 +140,16 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     if (parsed) setScheduleDropTime(parsed);
   }, [selectedIds, restaurants]);
 
-  // Auto-fill target dates from booking windows when restaurants are first selected
+  // Auto-fill target dates from booking windows whenever selection changes (unless user customized)
   useEffect(() => {
-    if (selectedIds.size === 0) return;
-    setDates(prev => {
-      if (prev.length > 0) return prev;
-      const drops = new Set<string>();
-      for (const id of selectedIds) {
-        const r = restaurants.find(x => x.id === id);
-        if (r) { const dd = getDropDate(r); if (dd) drops.add(dd); }
-      }
-      return drops.size > 0 ? Array.from(drops).sort() : prev;
-    });
-  }, [selectedIds, restaurants]);
+    if (selectedIds.size === 0 || datesCustomized) return;
+    const drops = new Set<string>();
+    for (const id of selectedIds) {
+      const r = restaurants.find(x => x.id === id);
+      if (r) { const dd = getDropDate(r, scheduleDropTime); if (dd) drops.add(dd); }
+    }
+    if (drops.size > 0) setDates(Array.from(drops).sort());
+  }, [selectedIds, restaurants, datesCustomized, scheduleDropTime]);
 
   const fetchScheduledSnipes = useCallback(async () => {
     try {
@@ -185,12 +198,14 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
 
   const addDate = (d: string) => {
     if (d && !dates.includes(d)) {
+      setDatesCustomized(true);
       setDates(prev => [...prev, d].sort());
     }
     setDateInput("");
   };
 
   const removeDate = (d: string) => {
+    setDatesCustomized(true);
     setDates(prev => prev.filter(x => x !== d));
   };
 
@@ -202,7 +217,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     const selected = restaurants.filter(r => selectedIds.has(r.id));
     const dropDates = new Set<string>(dates);
     for (const r of selected) {
-      const dd = getDropDate(r);
+      const dd = getDropDate(r, scheduleDropTime);
       if (dd) dropDates.add(dd);
     }
     setDates(Array.from(dropDates).sort());
@@ -227,15 +242,28 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           partySize: snipePartySize,
           dropTime: scheduleDropTime,
           authToken,
+          ...(notificationConfig ? { notificationConfig } : {}),
         }),
       });
 
       if (res.ok) {
         const data = await res.json();
-        onLog?.("info", `Snipe scheduled for ${formatTime12(scheduleDropTime)} ET`, { id: data.id });
+        const names = selectedRestaurants.map(r => r.name).join(", ");
+        onLog?.("success", `Snipe scheduled for ${formatTime12(scheduleDropTime)} ET — ${names} · ${dates.length} date(s) · ${selectedTimes.size} time(s)`, { id: data.id, qstashScheduled: data.qstashScheduled });
+        if (!data.qstashScheduled) {
+          onLog?.("warn", "QStash not configured — snipe saved but won't auto-fire");
+        }
         await fetchScheduledSnipes();
+        // Reset selection so the user doesn't accidentally schedule again
+        setSelectedIds(new Set());
+        setDatesCustomized(false);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        onLog?.("error", `Failed to schedule snipe: ${errData.error ?? res.statusText}`);
       }
-    } catch { /* silent */ }
+    } catch (err) {
+      onLog?.("error", `Schedule error: ${err instanceof Error ? err.message : String(err)}`);
+    }
     finally { setSchedulingInProgress(false); }
   };
 
@@ -243,7 +271,10 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     try {
       await fetch(`/api/scheduled-snipes?id=${id}`, { method: "DELETE" });
       setScheduledSnipes(prev => prev.filter(s => s.id !== id));
-    } catch { /* silent */ }
+      onLog?.("info", `Snipe ${id.slice(-4)} removed`);
+    } catch (err) {
+      onLog?.("error", `Failed to remove snipe: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   const resyRestaurants = restaurants
@@ -298,7 +329,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           <div className="space-y-1.5 max-h-56 overflow-y-auto pr-0.5">
             {resyRestaurants.map(r => {
               const isSelected = selectedIds.has(r.id);
-              const dropDate = getDropDate(r);
+              const dropDate = getDropDate(r, scheduleDropTime);
               return (
                 <button key={r.id} onClick={() => toggleRestaurant(r.id)} className={sel(isSelected)}>
                   <span className="font-medium text-sm truncate">{r.name}</span>
@@ -351,7 +382,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
                 </span>
               ))}
               {dates.length > 1 && (
-                <button onClick={() => setDates([])} className="text-[10px] text-stone-400 hover:text-stone-600 underline px-1">Clear all</button>
+                <button onClick={() => { setDates([]); setDatesCustomized(false); }} className="text-[10px] text-stone-400 hover:text-stone-600 underline px-1">Clear all</button>
               )}
             </div>
           )}
@@ -438,14 +469,38 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
               <label className="block text-xs text-stone-500 mb-1">Snipe window</label>
               <select value={snipeWindow} onChange={(e) => setSnipeWindow(Number(e.target.value))}
                 className="w-full px-2 py-2 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-2 focus:ring-gold/50">
-                <option value={15}>15 sec</option>
                 <option value={30}>30 sec</option>
                 <option value={60}>60 sec</option>
+                <option value={90}>90 sec</option>
                 <option value={120}>2 min</option>
               </select>
             </div>
           </div>
         )}
+
+        {/* Date mismatch warning: target dates don't align with any restaurant's drop date */}
+        {(() => {
+          if (selectedIds.size === 0 || dates.length === 0) return null;
+          const mismatches = Array.from(selectedIds)
+            .map(id => restaurants.find(r => r.id === id))
+            .filter((r): r is NonNullable<typeof r> => !!r && !!r.bookingTime && !!r.advanceDays)
+            .map(r => {
+              const dropDate = getDropDate(r, scheduleDropTime)!;
+              return dates.includes(dropDate) ? null : { name: r.name, dropDate, bookingTime: r.bookingTime! };
+            })
+            .filter((x): x is NonNullable<typeof x> => x !== null);
+          if (mismatches.length === 0) return null;
+          return (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-3.5 py-3 space-y-1.5">
+              <p className="text-xs font-semibold text-amber-800">Date mismatch — slots won&apos;t drop on your target date</p>
+              {mismatches.map(m => (
+                <p key={m.name} className="text-xs text-amber-700">
+                  <span className="font-medium">{m.name}</span> drops <span className="font-medium">{formatDateShort(m.dropDate)}</span> at {m.bookingTime} — that&apos;s not in your target dates. Add {formatDateShort(m.dropDate)} to catch the drop.
+                </p>
+              ))}
+            </div>
+          );
+        })()}
 
         {/* Primary action */}
         {redisAvailable === false ? (
