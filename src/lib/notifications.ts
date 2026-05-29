@@ -1,11 +1,9 @@
 /**
  * Notification service for the Resy Reservation Monitor.
  *
- * Supports three free channels:
- * 1. Email (via existing Gmail/Nodemailer integration)
- *    - Also supports carrier SMS gateways (e.g., 5551234567@vtext.com)
- * 2. Webhook (Discord, Slack, or any URL that accepts POST JSON)
- * 3. ntfy.sh (free push notifications — no account needed)
+ * Supports two free channels:
+ * 1. Webhook (Discord, Slack, or any URL that accepts POST JSON)
+ * 2. ntfy.sh (free push notifications — no account needed)
  *
  * All channels are optional and independently configurable.
  */
@@ -16,12 +14,6 @@ import type { MonitoredRestaurant } from "./resyMonitor";
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 export interface NotificationConfig {
-  email?: {
-    enabled: boolean;
-    to: string; // email address or carrier-sms gateway (e.g., 5551234567@vtext.com)
-    gmailUser: string;
-    gmailAppPassword: string;
-  };
   webhook?: {
     enabled: boolean;
     url: string; // Discord or Slack webhook URL
@@ -32,26 +24,6 @@ export interface NotificationConfig {
     topic: string; // e.g., "hopeyeats-alerts" — subscribe via ntfy.sh/hopeyeats-alerts
     server?: string; // defaults to https://ntfy.sh
   };
-}
-
-// SMS gateway suffixes for major US carriers
-export const SMS_GATEWAYS: Record<string, string> = {
-  verizon: "vtext.com",
-  att: "txt.att.net",
-  tmobile: "tmomail.net",
-  sprint: "messaging.sprintpcs.com",
-  uscellular: "email.uscc.net",
-  cricket: "sms.cricketwireless.net",
-  boost: "sms.myboostmobile.com",
-  metro: "mymetropcs.com",
-};
-
-export function buildSmsEmail(phone: string, carrier: string): string {
-  const digits = phone.replace(/\D/g, "");
-  if (!digits) return "";
-  const gateway = SMS_GATEWAYS[carrier.toLowerCase()];
-  if (!gateway) return "";
-  return `${digits}@${gateway}`;
 }
 
 // ─── Message Formatting ─────────────────────────────────────────────────────
@@ -79,36 +51,8 @@ function formatDate(dateStr: string): string {
   });
 }
 
-/** Plain text format for email/SMS. */
-function formatPlainText(alerts: SlotAlert[]): { subject: string; body: string } {
-  const totalNew = alerts.reduce((sum, a) => sum + a.newSlots.length, 0);
-  const restaurantNames = alerts.map((a) => a.restaurant.name).join(", ");
-
-  const subject = `Resy Alert: ${totalNew} new slot${totalNew !== 1 ? "s" : ""} at ${restaurantNames}`;
-
-  const lines: string[] = [
-    `${totalNew} NEW RESERVATION${totalNew !== 1 ? "S" : ""} FOUND`,
-    "",
-  ];
-
-  for (const alert of alerts) {
-    lines.push(`━━━ ${alert.restaurant.name} ━━━`);
-    for (const slot of alert.newSlots) {
-      lines.push(
-        `  ${formatDate(slot.date)} at ${formatTime12(slot.time)} — ${slot.tableType} (${slot.minParty}-${slot.maxParty}p)`,
-      );
-      lines.push(`  Book: ${slot.resyUrl}`);
-    }
-    lines.push("");
-  }
-
-  lines.push("— HopeYeats Monitor");
-
-  return { subject, body: lines.join("\n") };
-}
-
-/** Short SMS-friendly format (under 160 chars per slot). */
-function formatSms(alerts: SlotAlert[]): string {
+/** Short format used by ntfy body and generic webhook. */
+function formatShort(alerts: SlotAlert[]): string {
   const parts: string[] = [];
   for (const alert of alerts) {
     for (const slot of alert.newSlots) {
@@ -117,7 +61,6 @@ function formatSms(alerts: SlotAlert[]): string {
       );
     }
   }
-  // Truncate to keep reasonable SMS length
   return parts.slice(0, 5).join("\n");
 }
 
@@ -178,39 +121,6 @@ function formatSlack(alerts: SlotAlert[]): object {
 
 // ─── Notification Dispatch ───────────────────────────────────────────────────
 
-/** Send email notification via the existing /api/send-email endpoint. */
-async function sendEmail(
-  config: NonNullable<NotificationConfig["email"]>,
-  alerts: SlotAlert[],
-  baseUrl: string,
-): Promise<boolean> {
-  const { subject, body } = formatPlainText(alerts);
-
-  try {
-    const res = await fetch(`${baseUrl}/api/send-email`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        to: config.to,
-        subject,
-        body,
-        gmailUser: config.gmailUser,
-        gmailAppPassword: config.gmailAppPassword,
-      }),
-    });
-    const data = await res.json();
-    if (!data.success) {
-      console.error("[Notify] Email failed:", data.message);
-      return false;
-    }
-    console.log(`[Notify] Email sent to ${config.to}`);
-    return true;
-  } catch (err) {
-    console.error("[Notify] Email error:", err);
-    return false;
-  }
-}
-
 /** Send webhook notification (Discord, Slack, or generic POST). */
 async function sendWebhook(
   config: NonNullable<NotificationConfig["webhook"]>,
@@ -226,7 +136,6 @@ async function sendWebhook(
       payload = formatSlack(alerts);
       break;
     default:
-      // Generic webhook — send plain structure
       payload = {
         event: "new_slots",
         timestamp: new Date().toISOString(),
@@ -269,9 +178,7 @@ async function sendNtfy(
 ): Promise<boolean> {
   const server = config.server || "https://ntfy.sh";
   const totalNew = alerts.reduce((sum, a) => sum + a.newSlots.length, 0);
-  const restaurantNames = alerts.map((a) => a.restaurant.name).join(", ");
 
-  // ntfy supports a simple POST with headers for title/priority
   const firstSlot = alerts[0]?.newSlots[0];
   const clickUrl = firstSlot?.resyUrl || "https://resy.com";
 
@@ -284,7 +191,7 @@ async function sendNtfy(
         Tags: "fork_and_knife,sparkles",
         Click: clickUrl,
       },
-      body: formatSms(alerts),
+      body: formatShort(alerts),
     });
     if (!res.ok) {
       console.error(`[Notify] ntfy failed: ${res.status}`);
@@ -309,7 +216,6 @@ export async function sendNotifications(
   alerts: SlotAlert[],
   baseUrl: string,
 ): Promise<{ sent: string[]; failed: string[] }> {
-  // Filter to only alerts with new slots
   const activeAlerts = alerts.filter((a) => a.newSlots.length > 0);
   if (activeAlerts.length === 0) {
     return { sent: [], failed: [] };
@@ -317,17 +223,7 @@ export async function sendNotifications(
 
   const sent: string[] = [];
   const failed: string[] = [];
-
-  // Send all channels in parallel
   const promises: Promise<void>[] = [];
-
-  if (config.email?.enabled) {
-    promises.push(
-      sendEmail(config.email, activeAlerts, baseUrl).then((ok) => {
-        (ok ? sent : failed).push("email");
-      }),
-    );
-  }
 
   if (config.webhook?.enabled) {
     promises.push(

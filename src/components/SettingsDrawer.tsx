@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { SMS_GATEWAYS } from "@/lib/notifications";
-
 export interface DayTimeWindow {
   start: string; // "18:30"
   end: string;   // "21:30"
@@ -26,12 +24,6 @@ export interface AppSettings {
   // Per-user persistent state
   autoBookIds: string[];
   monitoredIds: string[];
-  // Notification
-  notifyEmail: string;
-  gmailUser: string;
-  gmailAppPassword: string;
-  smsPhone: string;
-  smsCarrier: string;
 }
 
 export const DEFAULT_DAY_TIME_WINDOWS: Record<string, DayTimeWindow> = {
@@ -56,11 +48,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   blackoutDates: [],
   autoBookIds: [],
   monitoredIds: [],
-  notifyEmail: "",
-  gmailUser: "",
-  gmailAppPassword: "",
-  smsPhone: "",
-  smsCarrier: "verizon",
 };
 
 const DAYS = [
@@ -651,56 +638,6 @@ export default function SettingsDrawer({
             </div>
           </section>
 
-          {/* Notifications */}
-          <section className="mb-6">
-            <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider mb-2">Notifications</h3>
-            <div className="space-y-2">
-              <input
-                type="email"
-                placeholder="Notification email"
-                value={local.notifyEmail}
-                onChange={(e) => update({ notifyEmail: e.target.value })}
-                className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
-              />
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="email"
-                  placeholder="Gmail (sender)"
-                  value={local.gmailUser}
-                  onChange={(e) => update({ gmailUser: e.target.value })}
-                  className="w-full px-2.5 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
-                />
-                <input
-                  type="password"
-                  placeholder="App password"
-                  value={local.gmailAppPassword}
-                  onChange={(e) => update({ gmailAppPassword: e.target.value })}
-                  className="w-full px-2.5 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
-                />
-              </div>
-              <div>
-                <label className="text-[10px] text-stone-500 mb-1 block">SMS (optional)</label>
-                <div className="flex gap-2">
-                  <input
-                    type="tel"
-                    placeholder="Phone"
-                    value={local.smsPhone}
-                    onChange={(e) => update({ smsPhone: e.target.value })}
-                    className="flex-1 px-2.5 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gold/50"
-                  />
-                  <select
-                    value={local.smsCarrier}
-                    onChange={(e) => update({ smsCarrier: e.target.value })}
-                    className="px-2 py-2 border border-stone-200 rounded-xl text-sm bg-white"
-                  >
-                    {Object.keys(SMS_GATEWAYS).map((c) => (
-                      <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </div>
-          </section>
         </div>
       </div>
     </>

@@ -6,7 +6,6 @@ import type { AvailabilitySlot } from "@/lib/resyApi";
 import type { MonitorPollResult } from "@/lib/resyMonitor";
 import type { SerializableSlotDiff } from "@/lib/resyMonitor";
 import type { NotificationConfig } from "@/lib/notifications";
-import { buildSmsEmail } from "@/lib/notifications";
 import SettingsDrawer, {
   loadSettings,
   saveSettings,
@@ -246,19 +245,8 @@ function HomeInner() {
   }, []);
 
   const buildNotificationConfig = useCallback((): NotificationConfig => {
-    if (!settings) return {};
-    const config: NotificationConfig = {};
-    if (settings.notifyEmail && settings.gmailUser && settings.gmailAppPassword) {
-      config.email = { enabled: true, to: settings.notifyEmail, gmailUser: settings.gmailUser, gmailAppPassword: settings.gmailAppPassword };
-    }
-    if (settings.smsPhone && settings.smsCarrier && settings.gmailUser && settings.gmailAppPassword) {
-      const smsAddr = buildSmsEmail(settings.smsPhone, settings.smsCarrier);
-      if (smsAddr) {
-        config.email = { enabled: true, to: smsAddr, gmailUser: settings.gmailUser, gmailAppPassword: settings.gmailAppPassword };
-      }
-    }
-    return config;
-  }, [settings]);
+    return {};
+  }, []);
 
   // --- Polling ---
   const pollInFlight = useRef(false);

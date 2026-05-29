@@ -57,12 +57,7 @@ export default function SnipePage() {
   const isAuthenticated = resyAuth?.authenticated ?? false;
   const authToken = resyAuth?.authToken;
 
-  // Build notification config from settings (only include channels that are configured)
-  const notificationConfig = settings ? {
-    ...(settings.notifyEmail && settings.gmailUser && settings.gmailAppPassword ? {
-      email: { enabled: true, to: settings.notifyEmail, gmailUser: settings.gmailUser, gmailAppPassword: settings.gmailAppPassword },
-    } : {}),
-  } : undefined;
+  const notificationConfig = undefined;
 
   return (
     <div className="min-h-screen bg-cream">

@@ -5,12 +5,9 @@ import { restaurants } from "@/data/restaurants";
 import type { AvailabilitySlot } from "@/lib/resyApi";
 import type { MonitorPollResult, SerializableSlotDiff } from "@/lib/resyMonitor";
 import type { NotificationConfig } from "@/lib/notifications";
-import { SMS_GATEWAYS, buildSmsEmail } from "@/lib/notifications";
 
 interface Props {
   partySize: number;
-  gmailUser?: string;
-  gmailAppPassword?: string;
 }
 
 type MonitorStatus = "idle" | "polling" | "running" | "error" | "rate-limited";
@@ -54,7 +51,7 @@ const resyRestaurants = restaurants.filter(
     (r.reservationMethod === "resy" || r.reservationMethod === "both"),
 );
 
-export default function ReservationMonitor({ partySize, gmailUser, gmailAppPassword }: Props) {
+export default function ReservationMonitor({ partySize }: Props) {
   const [status, setStatus] = useState<MonitorStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
@@ -76,11 +73,6 @@ export default function ReservationMonitor({ partySize, gmailUser, gmailAppPassw
   const [showNotifySettings, setShowNotifySettings] = useState(false);
 
   // Notification config
-  const [notifyEmail, setNotifyEmail] = useState(false);
-  const [notifyEmailTo, setNotifyEmailTo] = useState("");
-  const [notifyEmailMode, setNotifyEmailMode] = useState<"email" | "sms">("email");
-  const [smsPhone, setSmsPhone] = useState("");
-  const [smsCarrier, setSmsCarrier] = useState("verizon");
   const [notifyWebhook, setNotifyWebhook] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState("");
   const [webhookType, setWebhookType] = useState<"discord" | "slack" | "generic">("discord");
@@ -90,20 +82,6 @@ export default function ReservationMonitor({ partySize, gmailUser, gmailAppPassw
   /** Build notification config from UI state. */
   function buildNotificationConfig(): NotificationConfig {
     const config: NotificationConfig = {};
-
-    if (notifyEmail) {
-      const to = notifyEmailMode === "sms"
-        ? buildSmsEmail(smsPhone, smsCarrier)
-        : notifyEmailTo;
-      if (to && gmailUser && gmailAppPassword) {
-        config.email = {
-          enabled: true,
-          to,
-          gmailUser,
-          gmailAppPassword,
-        };
-      }
-    }
 
     if (notifyWebhook && webhookUrl) {
       config.webhook = { enabled: true, url: webhookUrl, type: webhookType };
@@ -474,80 +452,14 @@ export default function ReservationMonitor({ partySize, gmailUser, gmailAppPassw
                 />
               </svg>
               Notification Settings
-              {(notifyEmail || notifyWebhook || notifyNtfy) && (
+              {(notifyWebhook || notifyNtfy) && (
                 <span className="text-[10px] text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full">
-                  {[notifyEmail && "email", notifyWebhook && "webhook", notifyNtfy && "ntfy"].filter(Boolean).join(", ")}
+                  {[notifyWebhook && "webhook", notifyNtfy && "ntfy"].filter(Boolean).join(", ")}
                 </span>
               )}
             </button>
             {showNotifySettings && (
               <div className="bg-stone-50 rounded-xl p-4 space-y-4 text-sm">
-                {/* Email / SMS */}
-                <div>
-                  <label className="flex items-center gap-2 font-medium text-stone-700 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={notifyEmail}
-                      onChange={(e) => setNotifyEmail(e.target.checked)}
-                      className="rounded border-stone-300 text-[#1C1C1C] focus:ring-[#C9A84C]"
-                    />
-                    Email / SMS Alerts
-                  </label>
-                  {notifyEmail && (
-                    <div className="mt-2 ml-6 space-y-2">
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => setNotifyEmailMode("email")}
-                          className={`px-3 py-1 rounded-lg text-xs font-medium ${notifyEmailMode === "email" ? "bg-[#1C1C1C] text-white" : "bg-stone-200 text-stone-500"}`}
-                        >
-                          Email
-                        </button>
-                        <button
-                          onClick={() => setNotifyEmailMode("sms")}
-                          className={`px-3 py-1 rounded-lg text-xs font-medium ${notifyEmailMode === "sms" ? "bg-[#1C1C1C] text-white" : "bg-stone-200 text-stone-500"}`}
-                        >
-                          SMS (via email gateway)
-                        </button>
-                      </div>
-                      {notifyEmailMode === "email" ? (
-                        <input
-                          type="email"
-                          placeholder="your@email.com"
-                          value={notifyEmailTo}
-                          onChange={(e) => setNotifyEmailTo(e.target.value)}
-                          className="w-full px-3 py-1.5 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-[#C9A84C]"
-                        />
-                      ) : (
-                        <div className="flex gap-2">
-                          <input
-                            type="tel"
-                            placeholder="5551234567"
-                            value={smsPhone}
-                            onChange={(e) => setSmsPhone(e.target.value)}
-                            className="flex-1 px-3 py-1.5 border border-stone-200 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-[#C9A84C]"
-                          />
-                          <select
-                            value={smsCarrier}
-                            onChange={(e) => setSmsCarrier(e.target.value)}
-                            className="px-2 py-1.5 border border-stone-200 rounded-lg text-xs bg-white"
-                          >
-                            {Object.keys(SMS_GATEWAYS).map((c) => (
-                              <option key={c} value={c}>
-                                {c.charAt(0).toUpperCase() + c.slice(1)}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                      {!gmailUser && (
-                        <p className="text-[10px] text-amber-600">
-                          Gmail credentials required — set them in Settings above.
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-
                 {/* Webhook */}
                 <div>
                   <label className="flex items-center gap-2 font-medium text-stone-700 cursor-pointer">
