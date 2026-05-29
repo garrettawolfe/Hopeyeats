@@ -1129,6 +1129,17 @@ function HomeInner() {
           </div>
         )}
 
+        {consecutiveFails >= 2 && (
+          <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800 flex items-center gap-2">
+            <span className="text-amber-500">⚠</span>
+            <span>
+              WAF blocking detected ({consecutiveFails}x consecutive) — poll interval extended to{" "}
+              {Math.round(60 * Math.min(Math.pow(2, consecutiveFails), 8))}s.{" "}
+              This resolves automatically as Imperva re-learns the IP.
+            </span>
+          </div>
+        )}
+
         <footer className="mt-12 pt-6 border-t border-stone-200 text-center text-[10px] sm:text-xs text-stone-400 pb-4">
           <p>WolfePack Eats · Monitoring {resyRestaurants.length} restaurants on Resy</p>
         </footer>

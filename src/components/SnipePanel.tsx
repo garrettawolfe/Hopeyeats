@@ -20,6 +20,11 @@ interface ScheduledSnipe {
   qstashScheduled?: boolean;
 }
 
+interface NotificationConfig {
+  email?: { enabled: boolean; to: string; gmailUser: string; gmailAppPassword: string };
+  ntfy?: { enabled: boolean; topic: string; server?: string };
+}
+
 interface Props {
   restaurants: Restaurant[];
   isAuthenticated: boolean;
@@ -27,6 +32,7 @@ interface Props {
   partySize: number;
   dayTimeWindows?: Record<string, { start?: string; end?: string }>;
   preferredDays?: string[];
+  notificationConfig?: NotificationConfig;
   onBooked?: (event: Record<string, unknown>) => void;
   onLog?: (level: LogLevel, msg: string, data?: Record<string, unknown>) => void;
 }
@@ -102,7 +108,7 @@ function getDropDate(restaurant: Restaurant, scheduleDropTime: string): string |
   return `${y}-${mo}-${d}`;
 }
 
-export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, dayTimeWindows, onLog }: Props) {
+export default function SnipePanel({ restaurants, isAuthenticated, authToken, partySize: defaultPartySize, dayTimeWindows, notificationConfig, onLog }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [snipePartySize, setSnipePartySize] = useState(defaultPartySize);
   const [dates, setDates] = useState<string[]>([]);
@@ -236,6 +242,7 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
           partySize: snipePartySize,
           dropTime: scheduleDropTime,
           authToken,
+          ...(notificationConfig ? { notificationConfig } : {}),
         }),
       });
 

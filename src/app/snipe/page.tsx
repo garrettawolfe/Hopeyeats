@@ -57,6 +57,13 @@ export default function SnipePage() {
   const isAuthenticated = resyAuth?.authenticated ?? false;
   const authToken = resyAuth?.authToken;
 
+  // Build notification config from settings (only include channels that are configured)
+  const notificationConfig = settings ? {
+    ...(settings.notifyEmail && settings.gmailUser && settings.gmailAppPassword ? {
+      email: { enabled: true, to: settings.notifyEmail, gmailUser: settings.gmailUser, gmailAppPassword: settings.gmailAppPassword },
+    } : {}),
+  } : undefined;
+
   return (
     <div className="min-h-screen bg-cream">
       <header className="sticky top-0 z-30 bg-charcoal text-white">
@@ -100,6 +107,7 @@ export default function SnipePage() {
           partySize={settings?.partySize ?? 2}
           dayTimeWindows={settings?.dayTimeWindows}
           preferredDays={settings?.preferredDays ?? []}
+          notificationConfig={notificationConfig}
           onLog={addLog}
         />
         {snipeLogs.length > 0 && (

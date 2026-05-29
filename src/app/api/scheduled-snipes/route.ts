@@ -86,6 +86,7 @@ export async function POST(request: Request) {
       partySize = 2,
       dropTime,
       authToken,
+      notificationConfig,
     } = body;
 
     if (!restaurantIds?.length || !dates?.length || !preferredTimes?.length || !dropTime || !authToken) {
@@ -115,6 +116,7 @@ export async function POST(request: Request) {
         snipeWindowSeconds,
         partySize,
         authToken,
+        ...(notificationConfig ? { notificationConfig } : {}),
       };
 
       const result = await qstash.publishJSON({
@@ -160,6 +162,7 @@ export async function POST(request: Request) {
       status: "waiting",
       createdAt: new Date().toISOString(),
       qstashMessageId,
+      ...(notificationConfig ? { notificationConfig } : {}),
     };
 
     await addScheduledSnipe(snipe);

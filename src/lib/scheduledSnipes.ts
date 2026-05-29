@@ -24,6 +24,11 @@ function getRedis(): Redis | null {
 
 // ─── Scheduled Snipe Types ─────────────────────────────────────────────────
 
+export interface SnipeNotificationConfig {
+  email?: { enabled: boolean; to: string; gmailUser: string; gmailAppPassword: string };
+  ntfy?: { enabled: boolean; topic: string; server?: string };
+}
+
 export interface ScheduledSnipe {
   id: string;
   restaurantIds: string[];
@@ -39,6 +44,7 @@ export interface ScheduledSnipe {
   result?: string;
   createdAt: string;
   qstashMessageId?: string;
+  notificationConfig?: SnipeNotificationConfig;
 }
 
 const SNIPES_KEY = "wolfepack:scheduled_snipes";

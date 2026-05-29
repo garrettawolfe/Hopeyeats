@@ -24,6 +24,8 @@ import {
   loadGlobalCookies,
   saveGlobalCookies,
 } from "@/lib/scheduledSnipes";
+import { sendNotifications, type NotificationConfig } from "@/lib/notifications";
+import type { MonitoredRestaurant } from "@/lib/resyMonitor";
 
 export const maxDuration = 120;
 
@@ -88,6 +90,17 @@ export async function POST(request: Request) {
     snipeWindowSeconds = 60,
     partySize = 2,
     authToken,
+    notificationConfig,
+  }: {
+    snipeId?: string;
+    restaurantIds: string[];
+    dates: string[];
+    preferredTimes: string[];
+    timeRadius: number;
+    snipeWindowSeconds: number;
+    partySize: number;
+    authToken: string;
+    notificationConfig?: NotificationConfig;
   } = body;
 
   if (!authToken) {
@@ -141,12 +154,14 @@ export async function POST(request: Request) {
     const deadline = startTime + snipeWindowSeconds * 1000;
     let attempt = 0;
     let booked = false;
-    let bookResult: { restaurant: string; date: string; time: string; reservationId?: string } | null = null;
+    let bookResult: { restaurant: string; date: string; time: string; reservationId?: string; restaurantObj?: typeof targets[0] } | null = null;
     const failedTokens = new Set<string>();
     const slotFirstSeen = new Map<string, number>(); // configToken → ms since startTime
     let failCount403 = 0;
     let failCount412 = 0;
+    let failCountWAF = 0;
     let failCountOther = 0;
+    let zeroSlotsRounds = 0;
 
     // All restaurant×date pairs for parallel polling
     const pairs = targets.flatMap((restaurant) =>
@@ -191,9 +206,16 @@ export async function POST(request: Request) {
       // Collect and score all matching slots across all pairs
       type ScoredSlot = { slot: ReturnType<typeof parseSlots>[0]; restaurant: typeof targets[0]; date: string; score: number };
       const allScored: ScoredSlot[] = [];
+      let allZeroSlots = true;
       for (const res of availResults) {
-        if (res.status === "rejected") continue;
+        if (res.status === "rejected") {
+          const errStr = String(res.reason);
+          if (errStr.includes("502") || errStr.includes("503") || errStr.includes("WAF") || errStr.includes("Incapsula")) failCountWAF++;
+          else failCountOther++;
+          continue;
+        }
         const { restaurant, date, slots } = res.value;
+        if (slots.length > 0) allZeroSlots = false;
         for (const slot of slots) {
           if (failedTokens.has(slot.configToken)) continue;
           let score = 1000;
@@ -236,6 +258,7 @@ export async function POST(request: Request) {
             const errMsg = dr.status === "rejected" ? String(dr.reason) : (dr.value as { error: string }).error;
             if (errMsg.includes("403")) failCount403++;
             else if (errMsg.includes("412")) failCount412++;
+            else if (errMsg.includes("502") || errMsg.includes("503") || errMsg.includes("WAF")) failCountWAF++;
             else failCountOther++;
             failedTokens.add(allScored[i].slot.configToken);
             continue;
@@ -252,7 +275,7 @@ export async function POST(request: Request) {
           const totalElapsed = Date.now() - startTime;
           if (booking.success) {
             booked = true;
-            bookResult = { restaurant: restaurant.name, date: slot.date, time: slot.time, reservationId: booking.reservationId };
+            bookResult = { restaurant: restaurant.name, date: slot.date, time: slot.time, reservationId: booking.reservationId, restaurantObj: restaurant };
             console.log(`[Cron] BOOKED! ${restaurant.name} at ${slot.time} on ${slot.date} — T+${totalElapsed}ms (first seen T+${firstSeenMs}ms)`);
           } else {
             failedTokens.add(slot.configToken);
@@ -261,13 +284,15 @@ export async function POST(request: Request) {
         }
       }
 
+      if (allZeroSlots) zeroSlotsRounds++;
+
       if (!booked) {
         await new Promise((r) => setTimeout(r, 300));
       }
 
       if (attempt % 10 === 0) {
         const elapsed = Date.now() - startTime;
-        console.log(`[Cron] attempt=${attempt} T+${elapsed}ms fails=403:${failCount403}/412:${failCount412}/other:${failCountOther}`);
+        console.log(`[Cron] attempt=${attempt} T+${elapsed}ms fails=403:${failCount403}/412:${failCount412}/waf:${failCountWAF}/other:${failCountOther} zeroSlots:${zeroSlotsRounds}`);
       }
     }
 
@@ -277,8 +302,48 @@ export async function POST(request: Request) {
       const result = `Booked ${bookResult.restaurant} at ${bookResult.time} on ${bookResult.date} (${attempt} attempts, ${Math.round(elapsed / 1000)}s)`;
       console.log(`[Cron] DONE ✓ ${result}`);
       if (snipeId) await updateScheduledSnipe(snipeId, { status: "completed", result });
+
+      // Send booking confirmation notification
+      if (notificationConfig && bookResult.restaurantObj) {
+        try {
+          const r = bookResult.restaurantObj;
+          const monitoredR: MonitoredRestaurant = {
+            id: r.id,
+            name: r.name,
+            resyVenueId: r.resyVenueId!,
+            resyUrl: r.resyUrl ?? "",
+            advanceDays: r.advanceDays,
+          };
+          const alert = {
+            restaurant: monitoredR,
+            newSlots: [{
+              id: bookResult.reservationId ?? "booked",
+              venueId: r.resyVenueId!,
+              venueName: r.name,
+              date: bookResult.date,
+              time: bookResult.time,
+              dateTime: `${bookResult.date} ${bookResult.time}`,
+              tableType: "Reservation",
+              minParty: partySize,
+              maxParty: partySize,
+              configToken: "",
+              resyUrl: r.resyUrl ?? "",
+            }],
+          };
+          const notifResult = await sendNotifications(notificationConfig, [alert], "https://hopeyeats.vercel.app");
+          console.log(`[Cron] Notification sent=${notifResult.sent.join(",")} failed=${notifResult.failed.join(",")}`);
+        } catch (notifErr) {
+          console.warn(`[Cron] Notification error: ${notifErr}`);
+        }
+      }
     } else {
-      const result = `No booking after ${attempt} attempts in ${Math.round(elapsed / 1000)}s — fails: 403=${failCount403} 412=${failCount412} other=${failCountOther}`;
+      const parts = [`No booking after ${attempt} attempts in ${Math.round(elapsed / 1000)}s`];
+      if (failCount403) parts.push(`403=${failCount403}`);
+      if (failCount412) parts.push(`412=${failCount412}`);
+      if (failCountWAF) parts.push(`waf=${failCountWAF}`);
+      if (failCountOther) parts.push(`other=${failCountOther}`);
+      if (zeroSlotsRounds === attempt) parts.push(`(no slots seen all run)`);
+      const result = parts.join(" — ");
       console.log(`[Cron] DONE ✗ ${result}`);
       if (snipeId) await updateScheduledSnipe(snipeId, { status: "failed", result });
     }

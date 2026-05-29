@@ -188,6 +188,17 @@ interface ProxyConfig {
 
 let proxyList: ProxyConfig[] = [];
 
+// Auto-load proxies from env var on module init
+// PROXY_URLS format: comma-separated "host:port:user:pass" or "host:port" strings
+if (process.env.PROXY_URLS) {
+  const entries = process.env.PROXY_URLS.split(",").map((s) => s.trim()).filter(Boolean);
+  proxyList = entries.map((p) => {
+    const parts = p.split(":");
+    return { host: parts[0], port: parseInt(parts[1]), username: parts[2], password: parts[3] };
+  });
+  console.log(`[Resy] Loaded ${proxyList.length} proxies from PROXY_URLS env`);
+}
+
 /**
  * Set proxy list for rotating through. Format: "host:port:username:password"
  */
@@ -758,15 +769,15 @@ export function parseSlots(
   const venue = venues[0];
   const rawSlots = venue.slots ?? [];
 
-  // Filter out Crown/exclusive slots that normal users can't book
+  // Filter only Crown/GDA exclusive slots (exclusive.id !== 0)
+  // is_visible===false does NOT mean Crown — it can mean the slot is simply not yet open for booking
   const slots = rawSlots.filter((slot) => {
     const isExclusive = (slot.exclusive?.id ?? 0) !== 0;
-    const isHidden = slot.config?.is_visible === false;
-    return !isExclusive && !isHidden;
+    return !isExclusive;
   });
-  const hiddenCount = rawSlots.length - slots.length;
-  if (hiddenCount > 0) {
-    console.log(`[Resy] ${venueName}: skipping ${hiddenCount} Crown/exclusive slot(s), ${slots.length} public slot(s) remain`);
+  const crownCount = rawSlots.length - slots.length;
+  if (crownCount > 0) {
+    console.log(`[Resy] ${venueName}: skipping ${crownCount} Crown/exclusive slot(s), ${slots.length} public slot(s) remain`);
   }
 
   return slots.map((slot) => {
