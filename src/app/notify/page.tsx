@@ -25,11 +25,14 @@ const DOW_FULL = ["sunday", "monday", "tuesday", "wednesday", "thursday", "frida
 function getUpcomingDays(count: number): { iso: string; dow: number }[] {
   const days: { iso: string; dow: number }[] = [];
   const now = new Date();
+  const base = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // local midnight
   for (let i = 0; i < count; i++) {
-    const d = new Date(now);
-    d.setDate(now.getDate() + i);
-    const iso = d.toISOString().split("T")[0];
-    days.push({ iso, dow: d.getDay() });
+    const d = new Date(base);
+    d.setDate(base.getDate() + i);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    days.push({ iso: `${y}-${m}-${dd}`, dow: d.getDay() });
   }
   return days;
 }
@@ -114,13 +117,21 @@ export default function NotifyPage() {
   };
 
   const applyWeekend = (offset: 0 | 1) => {
-    const now = new Date();
-    const day = now.getDay();
+    const today = new Date();
+    // Use local midnight to avoid UTC offset shifting the date
+    const base = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const day = base.getDay();
     const daysToFri = ((5 - day + 7) % 7) + offset * 7;
-    const fri = new Date(now); fri.setDate(now.getDate() + daysToFri);
-    const sat = new Date(fri); sat.setDate(fri.getDate() + 1);
-    const sun = new Date(fri); sun.setDate(fri.getDate() + 2);
-    setSelectedDates(new Set([fri, sat, sun].map((d) => d.toISOString().split("T")[0])));
+    const isoDate = (d: Date) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${dd}`;
+    };
+    const fri = new Date(base); fri.setDate(base.getDate() + daysToFri);
+    const sat = new Date(base); sat.setDate(base.getDate() + daysToFri + 1);
+    const sun = new Date(base); sun.setDate(base.getDate() + daysToFri + 2);
+    setSelectedDates(new Set([fri, sat, sun].map(isoDate)));
   };
 
   // When "use my windows" is on, compute effective times for a given date
