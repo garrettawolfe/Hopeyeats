@@ -248,13 +248,22 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
 
       if (res.ok) {
         const data = await res.json();
-        onLog?.("info", `Snipe scheduled for ${formatTime12(scheduleDropTime)} ET`, { id: data.id });
+        const names = selectedRestaurants.map(r => r.name).join(", ");
+        onLog?.("success", `Snipe scheduled for ${formatTime12(scheduleDropTime)} ET — ${names} · ${dates.length} date(s) · ${selectedTimes.size} time(s)`, { id: data.id, qstashScheduled: data.qstashScheduled });
+        if (!data.qstashScheduled) {
+          onLog?.("warn", "QStash not configured — snipe saved but won't auto-fire");
+        }
         await fetchScheduledSnipes();
         // Reset selection so the user doesn't accidentally schedule again
         setSelectedIds(new Set());
         setDatesCustomized(false);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        onLog?.("error", `Failed to schedule snipe: ${errData.error ?? res.statusText}`);
       }
-    } catch { /* silent */ }
+    } catch (err) {
+      onLog?.("error", `Schedule error: ${err instanceof Error ? err.message : String(err)}`);
+    }
     finally { setSchedulingInProgress(false); }
   };
 
@@ -262,7 +271,10 @@ export default function SnipePanel({ restaurants, isAuthenticated, authToken, pa
     try {
       await fetch(`/api/scheduled-snipes?id=${id}`, { method: "DELETE" });
       setScheduledSnipes(prev => prev.filter(s => s.id !== id));
-    } catch { /* silent */ }
+      onLog?.("info", `Snipe ${id.slice(-4)} removed`);
+    } catch (err) {
+      onLog?.("error", `Failed to remove snipe: ${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   const resyRestaurants = restaurants

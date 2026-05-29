@@ -13,7 +13,12 @@ const resyRestaurants = restaurants.filter(
   (r) => r.resyVenueId && (r.reservationMethod === "resy" || r.reservationMethod === "both"),
 );
 
-const TIME_SLOTS = ["17:30", "18:00", "18:30", "19:00", "19:30", "20:00", "20:30", "21:00", "21:30"];
+const TIME_SLOTS = [
+  "11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30", "15:00",
+  "17:30", "18:00", "18:30", "19:00", "19:30", "20:00", "20:30", "21:00", "21:30",
+];
+const DINNER_TIMES = new Set(["18:30", "19:00", "19:30", "20:00", "20:30", "21:00", "21:30"]);
+const BRUNCH_TIMES = new Set(["11:30", "12:00", "12:30", "13:00", "13:30", "14:00", "14:30"]);
 const DOW_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const DOW_FULL = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
@@ -332,21 +337,49 @@ export default function NotifyPage() {
             </div>
           ) : (
             <>
-              <p className="text-xs text-gray-400 mb-3">Select one or more — a notify is placed for each time slot.</p>
+              <div className="flex gap-2 mb-3">
+                <button
+                  onClick={() => setSelectedTimes(new Set(DINNER_TIMES))}
+                  className={`px-3 py-1 text-xs rounded-full font-medium border transition-colors ${
+                    [...DINNER_TIMES].every(t => selectedTimes.has(t)) && selectedTimes.size === DINNER_TIMES.size
+                      ? "bg-indigo-600 text-white border-indigo-600"
+                      : "bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100"
+                  }`}
+                >
+                  Dinner (6:30–9:30 PM)
+                </button>
+                <button
+                  onClick={() => setSelectedTimes(new Set(BRUNCH_TIMES))}
+                  className={`px-3 py-1 text-xs rounded-full font-medium border transition-colors ${
+                    [...BRUNCH_TIMES].every(t => selectedTimes.has(t)) && selectedTimes.size === BRUNCH_TIMES.size
+                      ? "bg-amber-500 text-white border-amber-500"
+                      : "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
+                  }`}
+                >
+                  Brunch (11:30 AM–2:30 PM)
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 mb-2">Or pick manually — a notify is placed for each selected time.</p>
               <div className="flex gap-2 flex-wrap">
-                {TIME_SLOTS.map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => toggleTime(t)}
-                    className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all border ${
-                      selectedTimes.has(t)
-                        ? "bg-orange-500 text-white border-orange-500 shadow-sm"
-                        : "bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100"
-                    }`}
-                  >
-                    {t}
-                  </button>
-                ))}
+                {TIME_SLOTS.map((t) => {
+                  const isDinner = DINNER_TIMES.has(t);
+                  const isBrunch = BRUNCH_TIMES.has(t);
+                  return (
+                    <button
+                      key={t}
+                      onClick={() => toggleTime(t)}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all border ${
+                        selectedTimes.has(t)
+                          ? isDinner ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                            : isBrunch ? "bg-amber-500 text-white border-amber-500 shadow-sm"
+                            : "bg-orange-500 text-white border-orange-500 shadow-sm"
+                          : "bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100"
+                      }`}
+                    >
+                      {t}
+                    </button>
+                  );
+                })}
               </div>
             </>
           )}

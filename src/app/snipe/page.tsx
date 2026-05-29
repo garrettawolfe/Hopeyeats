@@ -110,11 +110,13 @@ export default function SnipePage() {
           notificationConfig={notificationConfig}
           onLog={addLog}
         />
-        {snipeLogs.length > 0 && (
-          <div className="mt-4">
-            <LogPanel entries={snipeLogs} title="Snipe Logs" defaultOpen={snipeLogs.some((e) => e.level === "error")} />
-          </div>
-        )}
+        <div className="mt-4">
+          <LogPanel
+            entries={snipeLogs}
+            title="Schedule Logs"
+            defaultOpen={snipeLogs.length > 0}
+          />
+        </div>
       </main>
     </div>
   );
